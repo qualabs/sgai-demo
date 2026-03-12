@@ -1,0 +1,45 @@
+volumes:
+  morpheus_shm:
+
+services:
+  morpheus:
+    build: ./morpheus
+    ports:
+      - "8080:80"
+    volumes:
+      - morpheus_shm:/dev/shm
+    command: >
+      /bin/sh -c "mkdir -p /dev/shm/nginx/client_temp
+      && chown -R www-data:www-data /dev/shm
+      && exec nginx -g 'daemon off;'"
+
+  vast-2-sgai:
+    build: ./vast-2-sgai
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+    # Copy vast-2-sgai/.env.example to vast-2-sgai/.env and fill in required values before first run
+
+  dashjs:
+    build:
+      context: ./dash.js
+      dockerfile: ../Dockerfile.dashjs
+    ports:
+      - "3001:3001"
+
+  player:
+    build:
+      context: ./player
+      dockerfile: Dockerfile
+    ports:
+      - "8081:80"
+
+  live-sim:
+    build: ./live-sim
+    ports:
+      - "8000:8000"
+    env_file: ".env"
+    depends_on:
+      - morpheus
+      - vast-2-sgai

@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Live-Sim Control</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      font-weight: 600;
+      color: #f8fafc;
+      margin-bottom: 1.5rem;
+      letter-spacing: -0.01em;
+    }
+
+    .card {
+      background: #1e2130;
+      border: 1px solid #2d3148;
+      border-radius: 10px;
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .card h2 {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #64748b;
+      margin-bottom: 1rem;
+    }
+
+    /* Stream controls */
+    .stream-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #374151;
+      flex-shrink: 0;
+      transition: background 0.3s;
+    }
+    .status-dot.running { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
+
+    .status-label {
+      font-size: 0.85rem;
+      color: #94a3b8;
+      flex: 1;
+    }
+
+    button {
+      padding: 0.45rem 1.1rem;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-start { background: #22c55e; color: #000; }
+    .btn-stop  { background: #ef4444; color: #fff; }
+    .btn-inject { background: #6366f1; color: #fff; width: 100%; margin-top: 0.75rem; }
+
+    /* Inject form */
+    .fields {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      font-size: 0.8rem;
+      color: #94a3b8;
+    }
+
+    input[type="number"] {
+      background: #0f1117;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      color: #e2e8f0;
+      padding: 0.4rem 0.6rem;
+      font-size: 0.9rem;
+      width: 100%;
+    }
+    input[type="number"]:focus {
+      outline: none;
+      border-color: #6366f1;
+    }
+
+    /* Events log */
+    #events-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      min-height: 2rem;
+    }
+
+    .event-item {
+      background: #0f1117;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.82rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .event-badge {
+      font-size: 0.72rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .badge-pending  { background: #ca8a04; color: #fff; }
+    .badge-firing   { background: #22c55e; color: #000; }
+    .badge-expired  { background: #374151; color: #94a3b8; }
+
+    .empty-label {
+      font-size: 0.82rem;
+      color: #374151;
+      text-align: center;
+      padding: 0.5rem 0;
+    }
+
+    /* Manifest URL */
+    .manifest-url {
+      font-family: monospace;
+      font-size: 0.82rem;
+      color: #818cf8;
+      word-break: break-all;
+    }
+
+    .copy-btn {
+      font-size: 0.75rem;
+      padding: 0.25rem 0.6rem;
+      background: #2d3148;
+      color: #94a3b8;
+      margin-top: 0.5rem;
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      background: #22c55e;
+      color: #000;
+      padding: 0.6rem 1rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.error { background: #ef4444; color: #fff; }
+  </style>
+</head>
+<body>
+
+<h1>Live-Sim Control</h1>
+
+<!-- Stream card -->
+<div class="card">
+  <h2>Stream</h2>
+  <div class="stream-row">
+    <div class="status-dot" id="dot"></div>
+    <span class="status-label" id="status-label">Stopped</span>
+    <button class="btn-start" id="btn-start" onclick="startFFmpeg()">Start</button>
+    <button class="btn-stop"  id="btn-stop"  onclick="stopFFmpeg()" disabled>Stop</button>
+  </div>
+</div>
+
+<!-- Inject card -->
+<div class="card">
+  <h2>Inject SCTE-35 Event</h2>
+  <div class="fields">
+    <label>
+      Delay (seconds)
+      <input type="number" id="delay" value="10" min="1" step="1" />
+    </label>
+    <label>
+      Duration (seconds)
+      <input type="number" id="duration" value="30" min="5" step="1" />
+    </label>
+  </div>
+  <button class="btn-inject" id="btn-inject" onclick="injectEvent()" disabled>
+    Inject SCTE-35 Event
+  </button>
+</div>
+
+<!-- Active events card -->
+<div class="card">
+  <h2>Active Events</h2>
+  <ul id="events-list">
+    <li class="empty-label">No active events</li>
+  </ul>
+</div>
+
+<!-- Manifest URL card -->
+<div class="card">
+  <h2>Player Manifest URL</h2>
+  <div class="manifest-url" id="manifest-url">http://localhost:8000/live.mpd</div>
+  <button class="copy-btn" onclick="copyManifest()">Copy URL</button>
+</div>
+
+<!-- MPD Viewer card -->
+<div class="card">
+  <h2>Live SCTE-35 MPD <span id="mpd-age" style="font-weight:normal;text-transform:none;letter-spacing:0;color:#64748b;font-size:0.75rem;"></span></h2>
+  <pre id="mpd-viewer" style="
+    background:#0f1117;
+    border:1px solid #2d3148;
+    border-radius:6px;
+    padding:0.75rem;
+    font-size:0.72rem;
+    color:#a5f3fc;
+    max-height:400px;
+    overflow:auto;
+    white-space:pre;
+    word-break:break-all;
+    margin:0;
+  ">Waiting for stream…</pre>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  const BASE = '';
+
+  async function startFFmpeg() {
+    const r = await fetch(`${BASE}/api/start`, { method: 'POST' });
+    const j = await r.json();
+    if (j.ok) toast('FFmpeg started');
+    else toast(j.msg || 'Error', true);
+  }
+
+  async function stopFFmpeg() {
+    const r = await fetch(`${BASE}/api/stop`, { method: 'POST' });
+    const j = await r.json();
+    if (j.ok) toast('FFmpeg stopped');
+    else toast(j.msg || 'Error', true);
+  }
+
+  async function injectEvent() {
+    const delay_s    = parseFloat(document.getElementById('delay').value);
+    const duration_s = parseFloat(document.getElementById('duration').value);
+    const r = await fetch(`${BASE}/api/inject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delay_s, duration_s }),
+    });
+    const j = await r.json();
+    if (j.ok) toast(`Event #${j.event.id} queued (fires in ${delay_s}s)`);
+    else toast(j.msg || 'Error', true);
+  }
+
+  function copyManifest() {
+    const url = document.getElementById('manifest-url').textContent;
+    navigator.clipboard.writeText(url).then(() => toast('URL copied!'));
+  }
+
+  function toast(msg, error = false) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = error ? 'error' : '';
+    el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), 2500);
+  }
+
+  function renderEvents(events) {
+    const list = document.getElementById('events-list');
+    if (!events.length) {
+      list.innerHTML = '<li class="empty-label">No active events</li>';
+      return;
+    }
+    list.innerHTML = events.map(e => {
+      let badge, label;
+      if (e.fire_in_s > 0) {
+        badge = 'badge-pending';
+        label = `fires in ${e.fire_in_s}s`;
+      } else if (e.expires_in_s > 0) {
+        badge = 'badge-firing';
+        label = `active — expires in ${e.expires_in_s}s`;
+      } else {
+        badge = 'badge-expired';
+        label = 'expired';
+      }
+      return `
+        <li class="event-item">
+          <span>Event #${e.id} &mdash; ${e.duration_s}s break &mdash; ${label}</span>
+          <span class="event-badge ${badge}">${badge === 'badge-pending' ? 'pending' : badge === 'badge-firing' ? 'active' : 'expired'}</span>
+        </li>`;
+    }).join('');
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch(`${BASE}/api/status`);
+      const j = await r.json();
+
+      const running = j.ffmpeg_running;
+      document.getElementById('dot').className = 'status-dot' + (running ? ' running' : '');
+      document.getElementById('status-label').textContent = running
+        ? `Running (pid ${j.ffmpeg_pid})`
+        : 'Stopped';
+      document.getElementById('btn-start').disabled  = running;
+      document.getElementById('btn-stop').disabled   = !running;
+      document.getElementById('btn-inject').disabled = !running;
+
+      renderEvents(j.events || []);
+    } catch (_) {}
+  }
+
+  setInterval(poll, 2000);
+  poll();
+
+  function highlightXml(text) {
+    // Escape HTML entities first
+    const esc = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+    return esc
+      // Processing instructions <?xml … ?>
+      .replace(/(&lt;\?)([\s\S]*?)(\?&gt;)/g,
+        '<span style="color:#c084fc">$1$2$3</span>')
+      // Comments &lt;!-- … --&gt;
+      .replace(/(&lt;!--)([\s\S]*?)(--&gt;)/g,
+        '<span style="color:#64748b">$1$2$3</span>')
+      // Closing tags &lt;/TagName&gt;
+      .replace(/(&lt;\/)([\w:-]+)(&gt;)/g,
+        '<span style="color:#7dd3fc">$1$2$3</span>')
+      // Opening/self-closing tag names &lt;TagName
+      .replace(/(&lt;)([\w:-]+)/g,
+        '<span style="color:#7dd3fc">$1$2</span>')
+      // Attribute values "…"
+      .replace(/(&quot;)([^&]*)(&quot;)/g,
+        '<span style="color:#86efac">$1$2$3</span>')
+      // Attribute names word=
+      .replace(/([\w:-]+)(=&quot;)/g,
+        '<span style="color:#fde68a">$1</span>$2')
+      // Closing angle brackets / &gt;
+      .replace(/(\/?&gt;)/g,
+        '<span style="color:#7dd3fc">$1</span>');
+  }
+
+  async function pollMpd() {
+    try {
+      const r = await fetch('/live_scte35.mpd', { cache: 'no-store' });
+      const viewer = document.getElementById('mpd-viewer');
+      const age = document.getElementById('mpd-age');
+      if (r.ok) {
+        viewer.innerHTML = highlightXml(await r.text());
+        age.textContent = `— updated ${new Date().toLocaleTimeString()}`;
+      } else if (r.status === 404) {
+        viewer.textContent = 'Waiting for stream…';
+        age.textContent = '';
+      }
+    } catch (_) {}
+  }
+
+  setInterval(pollMpd, 2000);
+  pollMpd();
+</script>
+</body>
+</html>

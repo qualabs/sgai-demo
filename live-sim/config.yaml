@@ -1,0 +1,24 @@
+# config.yaml — Application configuration (non-secret values)
+# Values here are overridden by environment variables of the same name.
+# Secrets (API keys) belong in .env, NOT here.
+
+# Server
+SERVER_PORT: 8000
+PATCH_INTERVAL: 2
+
+# Morpheus
+MORPHEUS_PUT_URL: "http://localhost:80/live.mpd?mode=scte-to-alternative"
+MORPHEUS_GET_URL: "http://localhost:80/live.mpd"
+
+# vast-2-sgai
+VAST2SGAI_URL: "http://localhost:3000"
+
+# Image generation
+IMAGE_MODEL: "gemini-3.1-flash-image-preview"
+# IMAGE_MODEL: "gemini-3.1-flash-lite-preview"
+IMAGE_ASPECT_RATIO: "16:9"
+IMAGE_SIZE: "2K"
+
+# gemini-2.5-flash-image
+# gemini-2.5-flash-image-preview
+# gemini-3.1-flash-image-preview
