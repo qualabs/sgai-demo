@@ -1,0 +1,9 @@
+[submodule "vast-2-sgai"]
+	path = vast-2-sgai
+	url = https://github.com/qualabs/vast-2-sgai
+[submodule "dash.js"]
+	path = dash.js
+	url = https://github.com/qualabs/dash.js
+[submodule "morpheus"]
+	path = morpheus
+	url = https://github.com/qualabs/morpheus
