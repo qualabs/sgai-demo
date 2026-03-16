@@ -1,4 +1,4 @@
-# morpheus-vast-demo
+# sgai-demo
 
 A demo environment that wires together four Qualabs projects into a single `docker compose up` command, showcasing Server-Guided Ad Insertion (SGAI) for MPEG-DASH with CMCD v2 reporting.
 
@@ -86,7 +86,7 @@ Minimal nginx container serving `sample-player.html` — loads dash.js from the 
 
 ```bash
 git clone --recurse-submodules <this-repo-url>
-cd morpheus-vast-demo
+cd sgai-demo
 ```
 
 If you already cloned without `--recurse-submodules`:
