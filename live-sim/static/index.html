@@ -178,6 +178,22 @@
     }
     #toast.show { opacity: 1; transform: translateY(0); }
     #toast.error { background: #ef4444; color: #fff; }
+
+    /* FFmpeg log */
+    #ffmpeg-log {
+      margin-top: 1rem;
+      background: #0a0c10;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      padding: 0.6rem 0.75rem;
+      font-family: monospace;
+      font-size: 0.75rem;
+      color: #94a3b8;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
   </style>
 </head>
 <body>
@@ -193,6 +209,7 @@
     <button class="btn-start" id="btn-start" onclick="startFFmpeg()">Start</button>
     <button class="btn-stop"  id="btn-stop"  onclick="stopFFmpeg()" disabled>Stop</button>
   </div>
+  <pre id="ffmpeg-log">Waiting for stream…</pre>
 </div>
 
 <!-- Inject card -->
@@ -205,7 +222,7 @@
     </label>
     <label>
       Duration (seconds)
-      <input type="number" id="duration" value="30" min="5" step="1" />
+      <input type="number" id="duration" value="20" min="5" step="1" />
     </label>
   </div>
   <button class="btn-inject" id="btn-inject" onclick="injectEvent()" disabled>
@@ -223,9 +240,21 @@
 
 <!-- Manifest URL card -->
 <div class="card">
-  <h2>Player Manifest URL</h2>
-  <div class="manifest-url" id="manifest-url">http://localhost:8000/live.mpd</div>
-  <button class="copy-btn" onclick="copyManifest()">Copy URL</button>
+  <h2>Manifest URLs</h2>
+  <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
+    <tr>
+      <td style="color:#64748b;white-space:nowrap;padding:0.25rem 0.75rem 0.25rem 0;vertical-align:middle;">live-sim</td>
+      <td class="manifest-url" style="padding:0.25rem 0;">http://localhost:8000/live.mpd</td>
+    </tr>
+    <tr>
+      <td style="color:#64748b;white-space:nowrap;padding:0.25rem 0.75rem 0.25rem 0;vertical-align:middle;">live-sim (SCTE-35)</td>
+      <td class="manifest-url" style="padding:0.25rem 0;">http://localhost:8000/live_scte35.mpd</td>
+    </tr>
+    <tr>
+      <td style="color:#64748b;white-space:nowrap;padding:0.25rem 0.75rem 0.25rem 0;vertical-align:middle;">morpheus</td>
+      <td class="manifest-url" style="padding:0.25rem 0;">http://localhost:8080/live.mpd</td>
+    </tr>
+  </table>
 </div>
 
 <!-- MPD Viewer card -->
@@ -387,6 +416,23 @@
 
   setInterval(pollMpd, 2000);
   pollMpd();
+
+  async function pollLogs() {
+    try {
+      const r = await fetch(`${BASE}/api/logs`);
+      const j = await r.json();
+      const el = document.getElementById('ffmpeg-log');
+      if (j.lines && j.lines.length) {
+        const atBottom = el.scrollHeight - el.scrollTop <= el.clientHeight + 4;
+        el.textContent = j.lines.join('\n');
+        if (atBottom) el.scrollTop = el.scrollHeight;
+      } else {
+        el.textContent = 'Waiting for stream…';
+      }
+    } catch (_) {}
+  }
+  setInterval(pollLogs, 2000);
+  pollLogs();
 </script>
 </body>
 </html>

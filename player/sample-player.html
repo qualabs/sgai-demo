@@ -160,7 +160,9 @@
                 } catch (_) {}
             }, 1000);
 
-            // Ad break visualizer — all server times are offset by +latency to get player-side times
+            // Ad break visualizer — tracks event state locally so the panel stays visible
+            // even after the server removes the event (which happens when the ad ends on the
+            // server, but the player is still latency seconds behind).
             async function pollAdStatus() {
                 try {
                     const r = await fetch('http://localhost:8000/api/status');
@@ -170,39 +172,73 @@
                     const latency = (player && typeof player.getCurrentLiveLatency === 'function')
                         ? player.getCurrentLiveLatency() : 0;
 
-                    const events = (j.events || []).map(e => ({
-                        ...e,
-                        playerFireIn:    e.fire_in_s   + latency,
-                        playerExpiresIn: e.expires_in_s + latency,
-                    })).filter(e => e.playerExpiresIn > 0);
+                    const apiEvent = (j.events || [])[0] || null;
+                    if (apiEvent) {
+                        if (!window._adEventState || window._adEventState.id !== apiEvent.id) {
+                            window._adEventState = {
+                                id: apiEvent.id,
+                                durationS: apiEvent.duration_s,
+                                lastFireInS: apiEvent.fire_in_s,
+                                lastSeenAt: Date.now(),
+                            };
+                        } else {
+                            window._adEventState.lastFireInS = apiEvent.fire_in_s;
+                            window._adEventState.lastSeenAt = Date.now();
+                        }
+                    }
 
-                    if (!events.length) {
+                    const state = window._adEventState;
+                    if (!state) {
                         panel.style.display = 'none';
                         return;
                     }
-                    const ev = events[0];
 
-                    if (ev.playerFireIn > 0) {
+                    // Extrapolate fire_in_s forward from the last known API value
+                    const elapsed = (Date.now() - state.lastSeenAt) / 1000;
+                    const fireInS = state.lastFireInS - elapsed;
+                    const playerFireIn = fireInS + latency;
+
+                    // Once the ad starts playing, stamp the wall-clock time so the
+                    // remaining countdown is purely time-based and immune to latency drift.
+                    if (playerFireIn <= 0 && !state.adStartedAt) {
+                        state.adStartedAt = Date.now();
+                    }
+
+                    const remaining = state.adStartedAt
+                        ? state.durationS - (Date.now() - state.adStartedAt) / 1000
+                        : playerFireIn + state.durationS;
+
+                    if (remaining <= 0) {
+                        window._adEventState = null;
+                        panel.style.display = 'none';
+                        return;
+                    }
+
+                    panel.style.display = 'block';
+
+                    if (!state.adStartedAt) {
                         panel.style.background = '#1e3a2f';
                         panel.style.border = '1px solid #166534';
                         panel.style.color = '#86efac';
+                        const serverFiresInText = fireInS > 0
+                            ? `${fireInS.toFixed(1)}s`
+                            : 'Ad triggered by the server';
                         text.innerHTML =
-                            `Ad break in ~${ev.playerFireIn.toFixed(1)}s<br>` +
-                            `&nbsp;&nbsp;Server fires in: ${ev.fire_in_s.toFixed(1)}s` +
+                            `Ad break in ~${playerFireIn.toFixed(1)}s<br>` +
+                            `&nbsp;&nbsp;Server fires in: ${serverFiresInText}` +
                             `<br>&nbsp;&nbsp;Player latency:&nbsp; ${latency.toFixed(1)}s`;
                     } else {
                         panel.style.background = '#1c1c2e';
                         panel.style.border = '1px solid #6366f1';
                         panel.style.color = '#a5b4fc';
-                        const remaining = ev.playerExpiresIn;
                         const mins = Math.floor(remaining / 60);
-                        const secs = Math.floor(remaining % 60);
+                        const secs = Math.ceil(remaining % 60);
                         text.innerHTML = `Ad break playing — ${mins > 0 ? mins + 'm ' : ''}${secs}s remaining`;
                     }
-                    panel.style.display = 'block';
                 } catch (_) {}
             }
             if (window._adPollInterval) clearInterval(window._adPollInterval);
+            window._adEventState = null;
             window._adPollInterval = setInterval(pollAdStatus, 1000);
             pollAdStatus();
         }

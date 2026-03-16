@@ -153,6 +153,41 @@ In `morpheus/ngx_morpheus_internal.cpp`, line 13, change the hardcoded ListMPD U
 
 ---
 
+## Pinned submodule commits
+
+The submodules are pinned to specific commits that are known to work with this demo. Using different commits may break the integration.
+
+| Submodule | Commit |
+|-----------|--------|
+| `dash.js` | `4ff27660fadf4f65a0631bb4bbfd475c1ef84857` |
+| `morpheus` | `ff0cb483b8a34d0b5ea601c7f6b4b580c7213bfb` |
+| `vast-2-sgai` | `0964dcfb3aa74ad0a8631316decc76ac3c6e6449` |
+
+If you update a submodule and the demo breaks, reset it to the pinned commit:
+
+```bash
+cd <submodule-dir>
+git checkout <commit-hash>
+cd ..
+git add <submodule-dir>
+git commit -m "revert <submodule> to known-good commit"
+```
+
+To pin to a different commit (e.g. after verifying a newer version works):
+
+```bash
+cd <submodule-dir>
+git fetch
+git checkout <new-commit-hash>
+cd ..
+git add <submodule-dir>
+git commit -m "pin <submodule> to <new-commit-hash>"
+```
+
+Then update the commit hash in the table above so this README stays in sync.
+
+---
+
 ## Updating submodules
 
 To pull the latest commits from all upstream branches:
@@ -160,3 +195,81 @@ To pull the latest commits from all upstream branches:
 ```bash
 git submodule update --remote --merge
 ```
+
+# SMPTE bar stream FFmpeg command
+
+The SMPTE bars live stream is generated using the following command:
+
+```python
+FFMPEG_CMD = [
+    "ffmpeg",
+    "-re",
+    "-f", "lavfi", "-i", "smptehdbars=size=1920x1080:rate=30",
+    "-f", "lavfi", "-i", "aevalsrc=exprs='if(lt(mod(t\\,1)\\,0.08)\\,sin(2*PI*1000*t)\\,0)|if(lt(mod(t\\,1)\\,0.08)\\,sin(2*PI*1000*t)\\,0):sample_rate=48000",
+    "-map", "0:v", "-map", "1:a",
+    "-vf", (
+        "realtime,"
+        "drawtext="
+        "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
+        r"text='LOCAL\: %{localtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
+        "fontcolor=white:fontsize=80:box=1:boxcolor=black@0.8:"
+        "x=(w-text_w)/2:y=(h-text_h)/2-60,"
+        "drawtext="
+        "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
+        r"text='UTC\: %{gmtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
+        "fontcolor=yellow:fontsize=80:box=1:boxcolor=black@0.8:"
+        "x=(w-text_w)/2:y=(h-text_h)/2+60"
+    ),
+    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+    "-crf", "28", "-g", "60",
+    "-pix_fmt", "yuv420p",
+    "-c:a", "aac", "-b:a", "128k",
+    "-f", "dash",
+    "-streaming", "1",
+    "-seg_duration", "2",
+    "-window_size", "10",
+    "-extra_window_size", "5",
+    "-use_timeline", "1",
+    "-use_template", "1",
+    "-remove_at_exit", "0",
+    str(MPD_PATH),
+]
+```
+
+## FFmpeg Command Reference
+
+| Argument | Value | Description |
+|---|---|---|
+| `-re` | — | Read input at native framerate, preventing the lavfi source from generating frames faster than real time |
+| `-f lavfi` | — | Use the libavfilter virtual device as input source |
+| `-i` | `smptehdbars=size=1920x1080:rate=30` | Generate SMPTE HD color bars at 1080p, 30 fps |
+| `-f lavfi` | — | Second virtual input source for audio |
+| `-i` | `evalsrc=exprs=...` | Generate a 1 kHz sine tone at 48000 Hz every second (broadcast standard sample rate, useful for audio sync verification) |
+| `-map 0:v` | — | Map video from the first input (color bars) |
+| `-map 1:a` | — | Map audio from the second input (sine click) |
+| `-vf` | `realtime,...` | Apply video filters (see below) |
+| `-c:v` | `libx264` | Encode video with H.264 |
+| `-preset` | `ultrafast` | Use the fastest x264 encoding preset to minimize encoder latency |
+| `-tune` | `zerolatency` | Disable B-frames and lookahead to reduce end-to-end stream latency |
+| `-crf` | `28` | Constant Rate Factor — controls quality/bitrate tradeoff (lower = better quality; 28 is suitable for test streams) |
+| `-g` | `60` | GOP size (keyframe interval): 2 seconds × 30 fps, aligned with DASH segment duration |
+| `-pix_fmt` | `yuv420p` | Output pixel format, required for broad player compatibility |
+| `-c:a` | `aac` | Encode audio with AAC |
+| `-b:a` | `128k` | Audio bitrate |
+| `-f` | `dash` | Output as MPEG-DASH |
+| `-streaming` | `1` | Enable low-latency streaming mode in the DASH muxer |
+| `-seg_duration` | `2` | Each DASH segment is 2 seconds long |
+| `-window_size` | `10` | Number of segments kept in the manifest at any time |
+| `-extra_window_size` | `5` | Additional segments retained on disk beyond the window |
+| `-use_timeline` | `1` | Include `SegmentTimeline` in the MPD manifest |
+| `-use_template` | `1` | Use a `SegmentTemplate` in the MPD (required for live streaming) |
+| `-remove_at_exit` | `0` | Keep segment files on disk when the process exits |
+| *(output)* | `MPD_PATH` | Path to the `.mpd` manifest file |
+
+### Video Filters (`-vf`)
+
+| Filter | Description |
+|---|---|
+| `realtime` | Throttles the filter graph to real time, preventing frame bursts from a lavfi source |
+| `drawtext` (GMT-3) | Overlays the current time offset to **GMT-3** (UTC − 3 h) with milliseconds in white, centered slightly above the frame midpoint |
+| `drawtext` (UTC) | Overlays the current **UTC time** with milliseconds in yellow, centered slightly below the frame midpoint |

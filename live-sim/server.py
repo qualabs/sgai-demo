@@ -12,6 +12,7 @@ Flow:
 """
 
 import asyncio
+import collections
 import io
 import json
 import logging
@@ -50,10 +51,46 @@ VAST2SGAI_URL    = config.get("VAST2SGAI_URL", "http://localhost:3000")
 SERVER_PORT      = config.get_int("SERVER_PORT", 8000)
 PATCH_INTERVAL   = config.get_int("PATCH_INTERVAL", 2)
 
+# FFMPEG_CMD = [
+#     "ffmpeg",
+#     "-re",
+#     "-f", "lavfi", "-i", "smptehdbars=size=1920x1080:rate=30",
+#     "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
+#     "-map", "0:v", "-map", "1:a",
+#     "-vf", (
+#         "realtime,"
+#         "drawtext="
+#         "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
+#         r"text='LOCAL\: %{localtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
+#         "fontcolor=white:fontsize=80:box=1:boxcolor=black@0.8:"
+#         "x=(w-text_w)/2:y=(h-text_h)/2-60,"
+#         "drawtext="
+#         "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
+#         r"text='UTC\: %{gmtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
+#         "fontcolor=yellow:fontsize=80:box=1:boxcolor=black@0.8:"
+#         "x=(w-text_w)/2:y=(h-text_h)/2+60"
+#     ),
+#     "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+#     "-crf", "28", "-g", "60",
+#     "-pix_fmt", "yuv420p",
+#     "-c:a", "aac", "-b:a", "128k",
+#     "-f", "dash",
+#     "-streaming", "1",
+#     "-seg_duration", "2",
+#     "-window_size", "10",
+#     "-extra_window_size", "5",
+#     "-use_timeline", "1",
+#     "-use_template", "1",
+#     "-remove_at_exit", "0",
+#     str(MPD_PATH),
+# ]
+
+
 FFMPEG_CMD = [
     "ffmpeg",
+    "-re",
     "-f", "lavfi", "-i", "smptehdbars=size=1920x1080:rate=30",
-    "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+    "-f", "lavfi", "-i", "aevalsrc=exprs='if(lt(mod(t\\,1)\\,0.08)\\,sin(2*PI*1000*t)\\,0)|if(lt(mod(t\\,1)\\,0.08)\\,sin(2*PI*1000*t)\\,0):sample_rate=48000",
     "-map", "0:v", "-map", "1:a",
     "-vf", (
         "realtime,"
@@ -68,7 +105,9 @@ FFMPEG_CMD = [
         "fontcolor=yellow:fontsize=80:box=1:boxcolor=black@0.8:"
         "x=(w-text_w)/2:y=(h-text_h)/2+60"
     ),
-    "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+    "-crf", "28", "-g", "60",
+    "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", "128k",
     "-f", "dash",
     "-streaming", "1",
@@ -194,6 +233,7 @@ ffmpeg_proc:    asyncio.subprocess.Process | None = None
 ffmpeg_start:   datetime | None = None   # UTC time FFmpeg was launched
 pending_events: list[dict]               = []    # active SCTE-35 events
 event_counter:  int                      = 0     # local event id counter
+ffmpeg_log:     collections.deque        = collections.deque(maxlen=200)
 
 # ── Namespace helpers ─────────────────────────────────────────────────────────
 
@@ -414,6 +454,8 @@ async def handle_start(request: web.Request) -> web.Response:
     ffmpeg_start   = datetime.now(timezone.utc)
     pending_events = []
     event_counter  = 0
+    ffmpeg_log.clear()
+    asyncio.ensure_future(_read_stderr(ffmpeg_proc))
 
     logger.info("[ffmpeg] started pid=%s", ffmpeg_proc.pid)
     return web.json_response({"ok": True, "pid": ffmpeg_proc.pid}, headers=CORS_HEADERS)
@@ -435,6 +477,15 @@ async def handle_stop(request: web.Request) -> web.Response:
     ffmpeg_proc  = None
     ffmpeg_start = None
     return web.json_response({"ok": True}, headers=CORS_HEADERS)
+
+
+async def _read_stderr(proc: asyncio.subprocess.Process) -> None:
+    """Drain ffmpeg stderr into ffmpeg_log to prevent buffer deadlock."""
+    try:
+        async for raw in proc.stderr:
+            ffmpeg_log.append(raw.decode(errors="replace").rstrip())
+    except Exception:
+        pass
 
 
 async def handle_status(request: web.Request) -> web.Response:
@@ -463,6 +514,10 @@ async def handle_status(request: web.Request) -> web.Response:
         },
         headers=CORS_HEADERS,
     )
+
+
+async def handle_logs(_request: web.Request) -> web.Response:
+    return web.json_response({"lines": list(ffmpeg_log)}, headers=CORS_HEADERS)
 
 
 async def handle_inject(request: web.Request) -> web.Response:
@@ -648,6 +703,7 @@ def make_app() -> web.Application:
     app.router.add_post("/api/start",    handle_start)
     app.router.add_post("/api/stop",     handle_stop)
     app.router.add_get("/api/status",    handle_status)
+    app.router.add_get("/api/logs",      handle_logs)
     app.router.add_post("/api/inject",   handle_inject)
     app.router.add_get("/api/overlay-image", handle_overlay_image)
     app.router.add_get("/api/modify-image",  handle_modify_image)
