@@ -25,9 +25,6 @@ from pathlib import Path
 import config
 
 from aiohttp import web, ClientSession, ClientTimeout
-from google import genai
-from google.genai import types
-from PIL import Image
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 
@@ -50,40 +47,6 @@ MORPHEUS_PUT_URL = f"{MORPHEUS_GET_URL}?mode=scte-to-alternative"
 VAST2SGAI_URL    = config.get("VAST2SGAI_URL", "http://localhost:3000")
 SERVER_PORT      = config.get_int("SERVER_PORT", 8000)
 PATCH_INTERVAL   = config.get_int("PATCH_INTERVAL", 2)
-
-# FFMPEG_CMD = [
-#     "ffmpeg",
-#     "-re",
-#     "-f", "lavfi", "-i", "smptehdbars=size=1920x1080:rate=30",
-#     "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
-#     "-map", "0:v", "-map", "1:a",
-#     "-vf", (
-#         "realtime,"
-#         "drawtext="
-#         "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
-#         r"text='LOCAL\: %{localtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
-#         "fontcolor=white:fontsize=80:box=1:boxcolor=black@0.8:"
-#         "x=(w-text_w)/2:y=(h-text_h)/2-60,"
-#         "drawtext="
-#         "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
-#         r"text='UTC\: %{gmtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
-#         "fontcolor=yellow:fontsize=80:box=1:boxcolor=black@0.8:"
-#         "x=(w-text_w)/2:y=(h-text_h)/2+60"
-#     ),
-#     "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-#     "-crf", "28", "-g", "60",
-#     "-pix_fmt", "yuv420p",
-#     "-c:a", "aac", "-b:a", "128k",
-#     "-f", "dash",
-#     "-streaming", "1",
-#     "-seg_duration", "2",
-#     "-window_size", "10",
-#     "-extra_window_size", "5",
-#     "-use_timeline", "1",
-#     "-use_template", "1",
-#     "-remove_at_exit", "0",
-#     str(MPD_PATH),
-# ]
 
 
 FFMPEG_CMD = [
@@ -119,113 +82,6 @@ FFMPEG_CMD = [
     "-remove_at_exit", "0",
     str(MPD_PATH),
 ]
-
-# ── Image generation ──────────────────────────────────────────────────────────
-
-GOOGLE_API_KEY      = config.get("GOOGLE_API_KEY", "")
-DEFAULT_IMAGE_MODEL = config.get("IMAGE_MODEL", "gemini-3.1-flash-image-preview")
-IMAGE_ASPECT_RATIO  = config.get("IMAGE_ASPECT_RATIO", "16:9")
-IMAGE_SIZE          = config.get("IMAGE_SIZE", "2K")
-
-_genai_client: genai.Client | None = None
-
-
-def _get_genai_client() -> genai.Client:
-    global _genai_client
-    if _genai_client is None:
-        _genai_client = genai.Client(api_key=GOOGLE_API_KEY)
-    return _genai_client
-
-
-def _log_response_diagnostics(tag: str, response) -> None:
-    """Log Gemini response metadata when no image part is found."""
-    if response.candidates:
-        reason = response.candidates[0].finish_reason
-        if reason and getattr(reason, "name", str(reason)) != "STOP":
-            logger.warning("[%s] finish_reason=%s", tag, reason)
-    if response.prompt_feedback:
-        logger.warning("[%s] prompt_feedback=%s", tag, response.prompt_feedback)
-    for part in response.parts or []:
-        if part.text:
-            logger.warning("[%s] model returned text instead of image: %s", tag, part.text[:500])
-
-
-def _generate_image_sync(prompt: str) -> bytes:
-    """Call Gemini image API synchronously; run via loop.run_in_executor."""
-    client = _get_genai_client()
-    logger.info("[generate-image] model=%s prompt=%r", DEFAULT_IMAGE_MODEL, prompt[:120])
-    try:
-        response = client.models.generate_content(
-            model=DEFAULT_IMAGE_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_modalities=["IMAGE"],
-                image_config=types.ImageConfig(
-                    aspect_ratio=IMAGE_ASPECT_RATIO,
-                    image_size=IMAGE_SIZE,
-                ),
-            ),
-        )
-    except Exception:
-        logger.exception("[generate-image] API call failed")
-        raise
-
-    for part in response.parts or []:
-        if part.inline_data is not None:
-            img: Image.Image = part.as_image()
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            return buf.getvalue()
-
-    _log_response_diagnostics("generate-image", response)
-    raise ValueError(
-        f"Gemini returned no image part (model={DEFAULT_IMAGE_MODEL}). "
-        f"Check that the model supports image generation."
-    )
-
-
-def _modify_image_sync(image_path: Path, city: str) -> bytes:
-    """Edit a base overlay image by replacing any visible city name with `city`.
-    Run via loop.run_in_executor."""
-    suffix = image_path.suffix.lower()
-    if suffix in (".jpg", ".jpeg"):
-        mime_type = "image/jpeg"
-    elif suffix == ".png":
-        mime_type = "image/png"
-    else:
-        raise ValueError(f"Unsupported image extension: {suffix!r}")
-
-    client = _get_genai_client()
-    logger.info("[modify-image] model=%s image=%s city=%r", DEFAULT_IMAGE_MODEL, image_path.name, city)
-    image_bytes = image_path.read_bytes()
-    prompt = (
-        f"Edit this image: find any city name text visible in the image "
-        f"and replace it with '{city}'. Keep all other parts of the image "
-        "identical. Return only the edited image."
-    )
-    try:
-        response = client.models.generate_content(
-            model=DEFAULT_IMAGE_MODEL,
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                prompt,
-            ],
-            config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
-        )
-    except Exception:
-        logger.exception("[modify-image] API call failed")
-        raise
-
-    for part in response.parts or []:
-        if part.inline_data is not None:
-            return part.inline_data.data
-
-    _log_response_diagnostics("modify-image", response)
-    raise ValueError(
-        f"Gemini returned no image part (model={DEFAULT_IMAGE_MODEL}). "
-        f"Check that the model supports image editing."
-    )
-
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
@@ -558,71 +414,6 @@ async def handle_inject(request: web.Request) -> web.Response:
     )
 
 
-async def handle_overlay_image(request: web.Request) -> web.Response:
-    """Near-real-time AI image generation for overlay ads.
-
-    GET /api/overlay-image?prompt=<text>
-    Returns: image/png (~2K 16:9, roughly 1920×1080)
-    """
-    prompt = request.rel_url.query.get("prompt", "").strip()
-
-    if not prompt:
-        return web.Response(status=400, text="Missing required query param: prompt", headers=CORS_HEADERS)
-    if not GOOGLE_API_KEY:
-        return web.Response(status=503, text="GOOGLE_API_KEY not configured", headers=CORS_HEADERS)
-
-    loop = asyncio.get_event_loop()
-    try:
-        image_bytes = await loop.run_in_executor(None, _generate_image_sync, prompt)
-    except Exception as exc:
-        logger.error("[overlay-image] generation error: %s", exc)
-        return web.Response(status=502, text=f"Image generation failed: {exc}", headers=CORS_HEADERS)
-
-    logger.info("[overlay-image] generated %s bytes", len(image_bytes))
-    return web.Response(
-        body=image_bytes,
-        content_type="image/png",
-        headers={**CORS_HEADERS, "Cache-Control": "no-cache"},
-    )
-
-
-async def handle_modify_image(request: web.Request) -> web.Response:
-    """Personalize an overlay image by swapping the visible city name.
-
-    GET /api/modify-image?image=<filename>&city=<city_name>
-    Returns: image/png
-    """
-    image_param = request.rel_url.query.get("image", "").strip()
-    city        = request.rel_url.query.get("city",  "").strip()
-
-    if not image_param or not city:
-        return web.Response(status=400, text="Missing required params: image, city", headers=CORS_HEADERS)
-    if not GOOGLE_API_KEY:
-        return web.Response(status=503, text="GOOGLE_API_KEY not configured", headers=CORS_HEADERS)
-
-    candidate = (OVERLAYS_DIR / image_param).resolve()
-    if not candidate.is_relative_to(OVERLAYS_DIR.resolve()):
-        return web.Response(status=400, text="Invalid image path", headers=CORS_HEADERS)
-    if candidate.suffix.lower() not in (".png", ".jpg", ".jpeg"):
-        return web.Response(status=400, text="Unsupported type. Use .png or .jpg", headers=CORS_HEADERS)
-    if not candidate.exists():
-        return web.Response(status=404, text=f"Image not found: {image_param}", headers=CORS_HEADERS)
-
-    loop = asyncio.get_event_loop()
-    try:
-        image_bytes = await loop.run_in_executor(None, _modify_image_sync, candidate, city)
-    except Exception as exc:
-        logger.error("[modify-image] error: %s", exc)
-        return web.Response(status=502, text=f"Image modification failed: {exc}", headers=CORS_HEADERS)
-
-    logger.info("[modify-image] %r city=%r → %s bytes", image_param, city, len(image_bytes))
-    return web.Response(
-        body=image_bytes,
-        content_type="image/png",
-        headers={**CORS_HEADERS, "Cache-Control": "no-cache"},
-    )
-
-
 async def handle_list_mpd(request: web.Request) -> web.Response:
     """Proxy GET /api/list-mpd → vast-2-sgai, patch first-period presentationTime=0 events to 20ms.
 
@@ -705,8 +496,6 @@ def make_app() -> web.Application:
     app.router.add_get("/api/status",    handle_status)
     app.router.add_get("/api/logs",      handle_logs)
     app.router.add_post("/api/inject",   handle_inject)
-    app.router.add_get("/api/overlay-image", handle_overlay_image)
-    app.router.add_get("/api/modify-image",  handle_modify_image)
     app.router.add_get("/api/list-mpd",      handle_list_mpd)
     app.router.add_get("/hello",             handle_hello)
     app.router.add_route("OPTIONS", "/{path_info:.*}", handle_options)
