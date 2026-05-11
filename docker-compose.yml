@@ -26,14 +26,14 @@ services:
       context: ./dash.js
       dockerfile: ../Dockerfile.dashjs
     ports:
-      - "3001:3001"
+      - "3003:3001"
 
   player:
     build:
       context: ./player
       dockerfile: Dockerfile
     ports:
-      - "8081:80"
+      - "8082:80"
 
   live-sim:
     build: ./live-sim

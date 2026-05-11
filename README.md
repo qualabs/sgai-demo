@@ -50,14 +50,14 @@ sequenceDiagram
 
 | Port | Service | Description |
 |------|---------|-------------|
-| 8081 | `player` | Demo page — serves `sample-player.html` |
-| 3001 | `dashjs` | dash.js webpack dev server — serves compiled player + assets |
+| 8082 | `player` | Demo page — serves `sample-player.html` |
+| 3003 | `dashjs` | dash.js webpack dev server — serves compiled player + assets |
 | 8080 | `morpheus` | MPEG-DASH manifest server with SCTE-35 → SGAI conversion |
 | 8000 | `live-sim` | Live stream simulator — FFmpeg + SCTE-35 injector + ListMPD proxy |
 | 3000 | `vast-2-sgai` | VAST-to-SGAI adapter — converts VAST XML into DASH ListMPDs |
 
-### `morpheus` — MPEG-DASH server ([qualabs/morpheus](https://github.com/qualabs/morpheus), branch: `feat/docker-image`)
-Custom Nginx module that converts SCTE-35 markers in the incoming MPD into `<ReplacePresentation>` SGAI events and serves the patched manifest to the player.
+### `morpheus` — MPEG-DASH server ([qualabs/morpheus](https://github.com/qualabs/morpheus), branch: `feat/scte-to-overlay`)
+Custom Nginx module that converts SCTE-35 markers in the incoming MPD into `<ReplacePresentation>` and `<OverlayEvent>` SGAI events and serves the patched manifest to the player.
 
 ### `live-sim` — live stream simulator
 Python/aiohttp service that runs FFmpeg to generate a live DASH stream, injects SCTE-35 events on demand, and proxies the vast-2-sgai ListMPD endpoint with a timing patch (see [Known caveats](#known-caveats)).
@@ -65,8 +65,8 @@ Python/aiohttp service that runs FFmpeg to generate a live DASH stream, injects 
 ### `vast-2-sgai` — VAST adapter ([qualabs/vast-2-sgai](https://github.com/qualabs/vast-2-sgai), branch: `main`)
 Node.js service that parses a VAST XML file and generates a DASH ListMPD with ad tracking events mapped to `presentationTime` values.
 
-### `dashjs` — instrumented player ([qualabs/dash.js](https://github.com/qualabs/dash.js), branch: `sgai/alternative-cmcd`)
-Fork of dash.js with CMCD v2 and SGAI alternative-content support. Served via webpack dev server.
+### `dashjs` — instrumented player ([qualabs/dash.js](https://github.com/qualabs/dash.js), branch: `sgai/alternative-overlays`)
+Fork of dash.js with CMCD v2, SGAI alternative-content and overlays support. Served via webpack dev server.
 
 ### `player` — demo page
 Minimal nginx container serving `sample-player.html` — loads dash.js from the `dashjs` service and plays back the manifest from `morpheus`.
@@ -107,7 +107,6 @@ Key variables in `.env`:
 
 | Variable | Description |
 |----------|-------------|
-| `GOOGLE_API_KEY` | Google API key for Gemini image generation in `live-sim` |
 | `VAST2SGAI_URL` | Internal URL for vast-2-sgai (default: `http://vast-2-sgai:3000`) |
 | `MORPHEUS_URL` | Internal URL for Morpheus (default: `http://morpheus`) |
 
