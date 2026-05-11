@@ -6,10 +6,6 @@
 SERVER_PORT: 8000
 PATCH_INTERVAL: 2
 
-# Morpheus
-MORPHEUS_PUT_URL: "http://localhost:80/live.mpd?mode=scte-to-alternative"
-MORPHEUS_GET_URL: "http://localhost:80/live.mpd"
-
 # vast-2-sgai
 VAST2SGAI_URL: "http://localhost:3000"
 

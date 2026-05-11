@@ -107,6 +107,20 @@
       border-color: #6366f1;
     }
 
+    select {
+      background: #0f1117;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      color: #e2e8f0;
+      padding: 0.4rem 0.6rem;
+      font-size: 0.9rem;
+      width: 100%;
+    }
+    select:focus {
+      outline: none;
+      border-color: #6366f1;
+    }
+
     /* Events log */
     #events-list {
       list-style: none;
@@ -214,7 +228,7 @@
 
 <!-- Inject card -->
 <div class="card">
-  <h2>Inject SCTE-35 Event</h2>
+  <h2>Inject Replace Presentation</h2>
   <div class="fields">
     <label>
       Delay (seconds)
@@ -225,8 +239,35 @@
       <input type="number" id="duration" value="20" min="5" step="1" />
     </label>
   </div>
-  <button class="btn-inject" id="btn-inject" onclick="injectEvent()" disabled>
-    Inject SCTE-35 Event
+  <button class="btn-inject" id="btn-inject-replace" onclick="injectEvent()" disabled>
+    Inject Replace Presentation
+  </button>
+</div>
+
+<!-- Overlay inject card -->
+<div class="card">
+  <h2>Inject Overlay Event</h2>
+  <div class="fields" style="grid-template-columns:1fr 1fr 1fr;">
+    <label>
+      Shape
+      <select id="overlay-shape">
+        <option value="banner">banner</option>
+        <option value="skyscraper">skyscraper</option>
+        <option value="lshape-left">lshape-left</option>
+        <option value="lshape-right">lshape-right</option>
+      </select>
+    </label>
+    <label>
+      Delay (seconds)
+      <input type="number" id="overlay-delay" value="10" min="1" step="1" />
+    </label>
+    <label>
+      Duration (seconds)
+      <input type="number" id="overlay-duration" value="20" min="5" step="1" />
+    </label>
+  </div>
+  <button class="btn-inject" id="btn-inject-overlay" onclick="injectOverlay()" disabled>
+    Inject Overlay Event
   </button>
 </div>
 
@@ -307,6 +348,20 @@
     else toast(j.msg || 'Error', true);
   }
 
+  async function injectOverlay() {
+    const shape      = document.getElementById('overlay-shape').value;
+    const delay_s    = parseFloat(document.getElementById('overlay-delay').value);
+    const duration_s = parseFloat(document.getElementById('overlay-duration').value);
+    const r = await fetch(`${BASE}/api/inject-overlay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shape, delay_s, duration_s }),
+    });
+    const j = await r.json();
+    if (j.ok) toast(`Overlay #${j.event.id} queued (${j.event.shape}, fires in ${delay_s}s)`);
+    else toast(j.msg || 'Error', true);
+  }
+
   function copyManifest() {
     const url = document.getElementById('manifest-url').textContent;
     navigator.clipboard.writeText(url).then(() => toast('URL copied!'));
@@ -338,9 +393,12 @@
         badge = 'badge-expired';
         label = 'expired';
       }
+      const typeTag = e.type === 'overlay'
+        ? ` <span style="color:#f472b6">[overlay${e.shape ? ': ' + e.shape : ''}]</span>`
+        : ` <span style="color:#94a3b8">[replace]</span>`;
       return `
         <li class="event-item">
-          <span>Event #${e.id} &mdash; ${e.duration_s}s break &mdash; ${label}</span>
+          <span>Event #${e.id}${typeTag} &mdash; ${e.duration_s}s &mdash; ${label}</span>
           <span class="event-badge ${badge}">${badge === 'badge-pending' ? 'pending' : badge === 'badge-firing' ? 'active' : 'expired'}</span>
         </li>`;
     }).join('');
@@ -358,7 +416,8 @@
         : 'Stopped';
       document.getElementById('btn-start').disabled  = running;
       document.getElementById('btn-stop').disabled   = !running;
-      document.getElementById('btn-inject').disabled = !running;
+      document.getElementById('btn-inject-replace').disabled = !running;
+      document.getElementById('btn-inject-overlay').disabled = !running;
 
       renderEvents(j.events || []);
     } catch (_) {}

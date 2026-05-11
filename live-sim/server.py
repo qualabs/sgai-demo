@@ -42,8 +42,7 @@ PATCHED_MPD_PATH = SEGMENTS_DIR / "live_scte35.mpd"
 OVERLAYS_DIR     = Path(__file__).parent / "overlays"
 
 MORPHEUS_URL     = config.get("MORPHEUS_URL", "http://morpheus")
-MORPHEUS_GET_URL = f"{MORPHEUS_URL}/live.mpd"
-MORPHEUS_PUT_URL = f"{MORPHEUS_GET_URL}?mode=scte-to-alternative"
+MORPHEUS_URL = f"{MORPHEUS_URL}/live.mpd"
 VAST2SGAI_URL    = config.get("VAST2SGAI_URL", "http://localhost:3000")
 SERVER_PORT      = config.get_int("SERVER_PORT", 8000)
 PATCH_INTERVAL   = config.get_int("PATCH_INTERVAL", 2)
@@ -134,13 +133,21 @@ def build_scte35_event_stream(events: list[dict]) -> ET.Element:
         section = ET.SubElement(event_el, _scte_ns("SpliceInfoSection"))
         section.set("xmlns:scte35", SCTE35_NS)
 
-        insert = ET.SubElement(section, _scte_ns("SpliceInsert"))
-        insert.set("spliceEventId", "1")          # always 1 → Morpheus hardcoded URL
-        insert.set("outOfNetworkIndicator", "true")
-
-        break_dur = ET.SubElement(insert, _scte_ns("BreakDuration"))
-        break_dur.set("autoReturn", "true")
-        break_dur.set("duration", str(ev["duration_ms"]))
+        if ev.get("type") == "overlay":
+            desc = ET.SubElement(section, _scte_ns("SegmentationDescriptor"))
+            desc.set("segmentationEventId", f"0x{ev['id']:08x}")
+            desc.set("segmentationTypeId", "56")
+            upid = ET.SubElement(desc, _scte_ns("SegmentationUpid"))
+            upid.set("segmentationUpidType", "14")
+            upid.set("segmentationUpidFormat", "text")
+            upid.text = f"shape={ev['shape']}"
+        else:
+            insert = ET.SubElement(section, _scte_ns("SpliceInsert"))
+            insert.set("spliceEventId", "1")
+            insert.set("outOfNetworkIndicator", "true")
+            break_dur = ET.SubElement(insert, _scte_ns("BreakDuration"))
+            break_dur.set("autoReturn", "true")
+            break_dur.set("duration", str(ev["duration_ms"]))
 
     return es
 
@@ -212,7 +219,7 @@ async def patcher_loop():
                         PATCHED_MPD_PATH.write_text(patched, encoding="utf-8")
 
                         async with session.put(
-                            MORPHEUS_PUT_URL,
+                            MORPHEUS_URL,
                             data=patched.encode("utf-8"),
                             headers={"Content-Type": "application/dash+xml"},
                         ) as resp:
@@ -250,7 +257,7 @@ async def handle_live_mpd(request: web.Request) -> web.Response:
     """Proxy GET /live.mpd → Morpheus → player."""
     try:
         async with ClientSession(timeout=ClientTimeout(total=5)) as session:
-            async with session.get(MORPHEUS_GET_URL) as resp:
+            async with session.get(MORPHEUS_URL) as resp:
                 body = await resp.read()
                 return web.Response(
                     body=body,
@@ -356,9 +363,11 @@ async def handle_status(request: web.Request) -> web.Response:
         )
         expires_in = (e["expiry"] - now).total_seconds()
         events_info.append({
-            "id":          e["id"],
-            "fire_in_s":   round(fire_in, 1) if fire_in is not None else None,
-            "duration_s":  round(e["duration_ms"] / 1000, 1),
+            "id":           e["id"],
+            "type":         e.get("type", "replace"),
+            "shape":        e.get("shape"),
+            "fire_in_s":    round(fire_in, 1) if fire_in is not None else None,
+            "duration_s":   round(e["duration_ms"] / 1000, 1),
             "expires_in_s": round(expires_in, 1),
         })
 
@@ -409,6 +418,56 @@ async def handle_inject(request: web.Request) -> web.Response:
         {
             "ok":     True,
             "event":  {"id": event_counter, "delay_s": delay_s, "duration_s": duration_s},
+        },
+        headers=CORS_HEADERS,
+    )
+
+
+_VALID_SHAPES = {"banner", "skyscraper", "lshape-left", "lshape-right"}
+
+
+async def handle_inject_overlay(request: web.Request) -> web.Response:
+    global event_counter
+
+    if ffmpeg_start is None:
+        return web.json_response(
+            {"ok": False, "msg": "FFmpeg not running — start it first"},
+            headers=CORS_HEADERS,
+        )
+
+    body = await request.json()
+    shape      = body.get("shape", "banner")
+    delay_s    = float(body.get("delay_s", 10))
+    duration_s = float(body.get("duration_s", 20))
+
+    if shape not in _VALID_SHAPES:
+        return web.json_response(
+            {"ok": False, "msg": f"Invalid shape. Must be one of: {', '.join(sorted(_VALID_SHAPES))}"},
+            headers=CORS_HEADERS,
+        )
+
+    now = datetime.now(timezone.utc)
+    elapsed_ms            = (now - ffmpeg_start).total_seconds() * 1000
+    presentation_time_ms  = int(elapsed_ms + delay_s * 1000)
+    duration_ms           = int(duration_s * 1000)
+    expiry                = ffmpeg_start + timedelta(milliseconds=presentation_time_ms + duration_ms)
+
+    event_counter += 1
+    event = {
+        "id":                   event_counter,
+        "type":                 "overlay",
+        "shape":                shape,
+        "presentation_time_ms": presentation_time_ms,
+        "duration_ms":          duration_ms,
+        "expiry":               expiry,
+    }
+    pending_events.append(event)
+
+    logger.info("[inject-overlay] id=%s shape=%s pt=%sms dur=%sms", event_counter, shape, presentation_time_ms, duration_ms)
+    return web.json_response(
+        {
+            "ok":    True,
+            "event": {"id": event_counter, "shape": shape, "delay_s": delay_s, "duration_s": duration_s},
         },
         headers=CORS_HEADERS,
     )
@@ -495,8 +554,9 @@ def make_app() -> web.Application:
     app.router.add_post("/api/stop",     handle_stop)
     app.router.add_get("/api/status",    handle_status)
     app.router.add_get("/api/logs",      handle_logs)
-    app.router.add_post("/api/inject",   handle_inject)
-    app.router.add_get("/api/list-mpd",      handle_list_mpd)
+    app.router.add_post("/api/inject",         handle_inject)
+    app.router.add_post("/api/inject-overlay", handle_inject_overlay)
+    app.router.add_get("/api/list-mpd",        handle_list_mpd)
     app.router.add_get("/hello",             handle_hello)
     app.router.add_route("OPTIONS", "/{path_info:.*}", handle_options)
 
