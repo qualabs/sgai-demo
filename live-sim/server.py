@@ -16,6 +16,7 @@ import collections
 import io
 import json
 import logging
+import os
 import re
 import signal
 import xml.etree.ElementTree as ET
@@ -48,25 +49,9 @@ SERVER_PORT      = config.get_int("SERVER_PORT", 8000)
 PATCH_INTERVAL   = config.get_int("PATCH_INTERVAL", 2)
 
 
-FFMPEG_CMD = [
-    "ffmpeg",
-    "-re",
-    "-f", "lavfi", "-i", "smptehdbars=size=1920x1080:rate=30",
-    "-f", "lavfi", "-i", "aevalsrc=exprs='if(lt(mod(t\\,1)\\,0.08)\\,sin(2*PI*1000*t)\\,0)|if(lt(mod(t\\,1)\\,0.08)\\,sin(2*PI*1000*t)\\,0):sample_rate=48000",
-    "-map", "0:v", "-map", "1:a",
-    "-vf", (
-        "realtime,"
-        "drawtext="
-        "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
-        r"text='LOCAL\: %{localtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
-        "fontcolor=white:fontsize=80:box=1:boxcolor=black@0.8:"
-        "x=(w-text_w)/2:y=(h-text_h)/2-60,"
-        "drawtext="
-        "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
-        r"text='UTC\: %{gmtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
-        "fontcolor=yellow:fontsize=80:box=1:boxcolor=black@0.8:"
-        "x=(w-text_w)/2:y=(h-text_h)/2+60"
-    ),
+# Shared output/encoding tail — identical for both the synthetic and the
+# file-backed source. Defined once so the two branches can't drift.
+OUTPUT_TAIL = [
     "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
     "-crf", "28", "-g", "60",
     "-pix_fmt", "yuv420p",
@@ -81,6 +66,49 @@ FFMPEG_CMD = [
     "-remove_at_exit", "0",
     str(MPD_PATH),
 ]
+
+
+def build_ffmpeg_cmd() -> list[str]:
+    """Build the FFmpeg command based on the LIVE_SIM_VIDEO env var.
+
+    - If LIVE_SIM_VIDEO is set AND the file exists: loop that file infinitely,
+      use the file's own audio (optional, so it won't fail without an audio
+      track), and draw NO timecode overlay.
+    - Otherwise: fall back to a synthetic smptehdbars video + synthetic beep
+      audio + the LOCAL/UTC timecode drawtext overlay.
+    """
+    video = os.environ.get("LIVE_SIM_VIDEO")
+    if video and os.path.isfile(video):
+        return [
+            "ffmpeg",
+            "-stream_loop", "-1",
+            "-re",
+            "-i", video,
+            "-map", "0:v", "-map", "0:a?",   # video + file audio (optional)
+            *OUTPUT_TAIL,
+        ]
+
+    return [
+        "ffmpeg",
+        "-re",
+        "-f", "lavfi", "-i", "smptehdbars=size=1920x1080:rate=30",
+        "-f", "lavfi", "-i", "aevalsrc=exprs='if(lt(mod(t\\,1)\\,0.08)\\,sin(2*PI*1000*t)\\,0)|if(lt(mod(t\\,1)\\,0.08)\\,sin(2*PI*1000*t)\\,0):sample_rate=48000",
+        "-map", "0:v", "-map", "1:a",
+        "-vf", (
+            "realtime,"
+            "drawtext="
+            "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
+            r"text='LOCAL\: %{localtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
+            "fontcolor=white:fontsize=80:box=1:boxcolor=black@0.8:"
+            "x=(w-text_w)/2:y=(h-text_h)/2-60,"
+            "drawtext="
+            "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
+            r"text='UTC\: %{gmtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
+            "fontcolor=yellow:fontsize=80:box=1:boxcolor=black@0.8:"
+            "x=(w-text_w)/2:y=(h-text_h)/2+60"
+        ),
+        *OUTPUT_TAIL,
+    ]
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
@@ -312,8 +340,13 @@ async def handle_start(request: web.Request) -> web.Response:
     if MPD_PATH.exists():
         MPD_PATH.unlink()
 
+    video = os.environ.get("LIVE_SIM_VIDEO")
+    used_file = bool(video and os.path.isfile(video))
+    logger.info("[ffmpeg] source=%s", video if used_file else "synthetic smptehdbars")
+
+    cmd = build_ffmpeg_cmd()
     ffmpeg_proc = await asyncio.create_subprocess_exec(
-        *FFMPEG_CMD,
+        *cmd,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )

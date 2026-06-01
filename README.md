@@ -117,6 +117,53 @@ Key variables in `.env`:
 | `MORPHEUS_URL` | Internal URL for Morpheus (default: `http://morpheus`) |
 | `REAL_TIME_AD_GEN_URL` | Internal URL for the ad generator API (default: `http://api:8000`) |
 
+#### Overlay ad URLs (morpheus)
+
+Morpheus builds each overlay `uri` in the served MPD as:
+
+```
+${AD_GEN_BASE_URL}/image/html?${MORPHEUS_<SHAPE>_QUERY}
+```
+
+These are resolved by the **player (browser)**, not by morpheus, so `AD_GEN_BASE_URL` must point to a host the browser can reach: `http://localhost:8888` for same-machine, or a LAN IP like `http://192.168.68.85:8888` when serving the demo to other machines.
+
+| Variable | Description |
+|----------|-------------|
+| `AD_GEN_BASE_URL` | host:port of the ad-gen API as the browser must reach it (default: `http://localhost:8888`) |
+| `MORPHEUS_BANNER_QUERY` | Full query string (template_id + targeting params) for the banner overlay |
+| `MORPHEUS_SKYSCRAPER_QUERY` | Full query string for the skyscraper overlay |
+| `MORPHEUS_LSHAPE_RIGHT_QUERY` | Full query string for the L-shape (right) overlay |
+| `MORPHEUS_LSHAPE_LEFT_QUERY` | Full query string for the L-shape (left) overlay |
+
+All five are **optional**. If unset or empty, morpheus falls back to compiled defaults (`localhost:8888` + the default templates), so the demo still runs with no config.
+
+To change values, edit `.env` and restart the service — no rebuild is needed for value changes (only the initial code change required a rebuild):
+
+```bash
+docker compose up -d morpheus
+```
+
+#### Background video (live-sim)
+
+By default `live-sim` streams a synthetic `smptehdbars` test pattern with a LOCAL/UTC timecode overlay drawn on every frame, plus a synthetic beep audio track — so the demo runs with no config and no media files present.
+
+To use a real video instead, set `LIVE_SIM_VIDEO` to a path **inside the container**. The host directory `live-sim/media/` is mounted at `/media` in the container (`./live-sim/media:/media`), so drop a video file there and point the variable at it:
+
+| Variable | Description |
+|----------|-------------|
+| `LIVE_SIM_VIDEO` | Path inside the container to a background video (e.g. `/media/surf.mp4`). Optional. |
+
+Behavior:
+
+- **Set and the file exists:** FFmpeg loops the file infinitely, uses the **file's own audio**, and **omits** the timecode overlay.
+- **Unset/empty or the file is missing:** falls back to the synthetic SMPTE-bars source with the timecode overlay (the default).
+
+Files dropped in `live-sim/media/` are never committed (a `.gitignore` ignores everything but itself). To change the video, edit `.env` and restart the service:
+
+```bash
+docker compose up -d live-sim
+```
+
 `vast-2-sgai` uses its own `.env` inside the submodule:
 
 ```bash

@@ -6,6 +6,12 @@ services:
     build: ./morpheus
     ports:
       - "8080:80"
+    environment:
+      - AD_GEN_BASE_URL=${AD_GEN_BASE_URL:-}
+      - MORPHEUS_BANNER_QUERY=${MORPHEUS_BANNER_QUERY:-}
+      - MORPHEUS_SKYSCRAPER_QUERY=${MORPHEUS_SKYSCRAPER_QUERY:-}
+      - MORPHEUS_LSHAPE_RIGHT_QUERY=${MORPHEUS_LSHAPE_RIGHT_QUERY:-}
+      - MORPHEUS_LSHAPE_LEFT_QUERY=${MORPHEUS_LSHAPE_LEFT_QUERY:-}
     volumes:
       - morpheus_shm:/dev/shm
     command: >
@@ -40,6 +46,8 @@ services:
     ports:
       - "8000:8000"
     env_file: ".env"
+    volumes:
+      - ./live-sim/media:/media
     depends_on:
       - morpheus
       - vast-2-sgai
