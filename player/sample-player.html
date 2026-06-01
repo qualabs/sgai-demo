@@ -102,8 +102,17 @@
                 &nbsp;|&nbsp; Target: <span id="stat-target">—</span>s
                 &nbsp;|&nbsp; Buffer: <span id="stat-buffer">—</span>s
             </div>
-            <div id="ad-break-panel" style="display:none; margin-top:0.5rem; padding:0.5rem 0.75rem; border-radius:6px; font-size:0.82rem; font-family:monospace;">
-                <span id="ad-break-text"></span>
+            <!-- Ad-break lifecycle stepper. Each row is one stage; the icon shows
+                 pending (◌) / active (▶) / done (✓), the label names the stage and the
+                 right-hand cell shows a live countdown to the next transition. -->
+            <div id="ad-break-panel" style="display:none; margin-top:0.5rem; padding:0.6rem 0.8rem; border-radius:8px; font-size:0.8rem; font-family:'SF Mono',Menlo,Consolas,monospace; background:#13131f; border:1px solid #2a2a40; color:#cbd5e1;">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.45rem;">
+                    <span id="ad-stepper-title" style="font-weight:700; letter-spacing:0.04em; text-transform:uppercase; font-size:0.7rem; color:#94a3b8;">Ad Break Lifecycle</span>
+                    <span id="ad-stepper-headline" style="font-size:0.74rem; color:#a5b4fc;"></span>
+                </div>
+                <div id="ad-stepper-steps" style="display:flex; flex-direction:column; gap:0.18rem;">
+                    <!-- rows injected by JS; ids: step-detected / step-prefetch / step-loaded / step-showing / step-done -->
+                </div>
             </div>
 
             <details id="section-network" class="mt-4">
@@ -205,6 +214,18 @@
                 ? req.trace.reduce((s, t) => s + (t.b ? t.b.reduce((a, b) => a + b, 0) : 0), 0)
                 : 0;
             addNetworkRow(req.type, req.url, req.responsecode, bytes, duration);
+
+            // REAL "image loaded" signal: OverlayController triggers an 'OverlayFetch'
+            // metric the moment the creative blob finishes downloading (and entry.resolved
+            // is set true). See dash.js OverlayController.js:244-255. This means the ad
+            // creative is pre-loaded and ready before display.
+            if (req.type === 'OverlayFetch') {
+                const st = window._adEventState;
+                if (st) {
+                    if (!st.prefetchFiredAt) { st.prefetchFiredAt = Date.now(); st.prefetchSource = st.prefetchSource || 'metric'; }
+                    if (!st.loadedAt) { st.loadedAt = Date.now(); st.loadedSource = 'overlay-fetch'; }
+                }
+            }
         }
 
         function addNetworkRow(type, url, responsecode, bytes, durationMs) {
@@ -326,6 +347,75 @@
             player.on(dashjs.MediaPlayer.events.METRIC_ADDED, onMetricAdded);
             clearNetworkLog();
 
+            // ── Real dash.js overlay-lifecycle events ───────────────────────────
+            // We layer real player events on top of the /api/status timing backbone.
+            // The state machine flags live on window._adEventState (created by the poll).
+            //
+            //  • PREFETCH:  CoreEvents.EVENT_READY_TO_RESOLVE ('eventReadyToResolve') is
+            //    fired by EventController when an event reaches its earliestResolutionTime
+            //    (morpheus sets earliestResolutionTime="35000" → ~35s before display).
+            //    See dash.js: src/streaming/controllers/EventController.js:589-601 and
+            //    src/core/events/CoreEvents.js:45. It is an INTERNAL event but the public
+            //    player.on() forwards straight to the shared singleton EventBus
+            //    (MediaPlayer.js:557), so we can subscribe to the raw string.
+            //
+            //  • IMAGE LOADED: OverlayController._prefetchIframeContent() fetches the
+            //    creative as a blob and, on success, triggers a 'metricAdded' of
+            //    type 'OverlayFetch' (HTTPRequest.OVERLAY_TYPE). That is the REAL
+            //    "creative resolved / pre-loaded" signal. See OverlayController.js:225-258.
+            //    We mark loaded when an OverlayFetch metric lands (handled in onMetricAdded
+            //    below via _markAdLoaded). As a secondary/inferred signal we also watch the
+            //    #overlay div with a MutationObserver for an <iframe> being inserted.
+            //
+            //  • DETECTED: the overlay scheme event 'urn:scte:dash:scte214-events'
+            //    (Constants.OVERLAY.SCHEME_ID) is dispatched to OverlayController and to us.
+            //    Detection is also covered by the event appearing in /api/status, so the
+            //    scheme subscription is a belt-and-suspenders confirmation.
+            const EVENT_READY_TO_RESOLVE = 'eventReadyToResolve';      // CoreEvents.js:45
+            const OVERLAY_SCHEME_ID      = 'urn:scte:dash:scte214-events'; // Constants.js OVERLAY.SCHEME_ID
+
+            function _onEventReadyToResolve(e) {
+                // Fired at display_time − earliestResolutionTime (the prefetch trigger).
+                const st = window._adEventState;
+                if (!st) return;
+                if (!st.prefetchFiredAt) {
+                    st.prefetchFiredAt = Date.now();
+                    st.prefetchSource = 'event'; // real dash.js event, not computed
+                }
+            }
+            function _onOverlaySchemeEvent(_e) {
+                // Confirms the overlay opportunity is known to the player.
+                const st = window._adEventState;
+                if (st) st.detectedConfirmedByEvent = true;
+            }
+
+            player.off(EVENT_READY_TO_RESOLVE, _onEventReadyToResolve);
+            player.on(EVENT_READY_TO_RESOLVE, _onEventReadyToResolve);
+            player.off(OVERLAY_SCHEME_ID, _onOverlaySchemeEvent);
+            player.on(OVERLAY_SCHEME_ID, _onOverlaySchemeEvent);
+
+            // Inferred "image loaded" fallback: watch the overlay rendering div for an
+            // <iframe>/<img> insertion and use its load event. The primary signal is the
+            // OverlayFetch metric (real); this only fires if that somehow didn't.
+            if (window._adOverlayObserver) window._adOverlayObserver.disconnect();
+            window._adOverlayObserver = new MutationObserver((mutations) => {
+                const st = window._adEventState;
+                if (!st) return;
+                for (const m of mutations) {
+                    m.addedNodes && m.addedNodes.forEach((node) => {
+                        if (!node || !node.tagName) return;
+                        const tag = node.tagName.toUpperCase();
+                        if (tag === 'IFRAME' || tag === 'IMG' || tag === 'VIDEO') {
+                            // The element is now in the DOM → showing has begun.
+                            if (!st.showingDomAt) st.showingDomAt = Date.now();
+                            const onload = () => { if (st && !st.loadedAt) { st.loadedAt = Date.now(); st.loadedSource = st.loadedSource || 'inferred-dom'; } };
+                            node.addEventListener && node.addEventListener('load', onload, { once: true });
+                        }
+                    });
+                }
+            });
+            window._adOverlayObserver.observe(overlay, { childList: true, subtree: true });
+
             // Latency stats
             document.getElementById('latency-stats').style.display = 'block';
             if (window._latencyInterval) clearInterval(window._latencyInterval);
@@ -340,18 +430,73 @@
                 } catch (_) {}
             }, 1000);
 
-            // Ad break visualizer — tracks event state locally so the panel stays visible
-            // even after the server removes the event (which happens when the ad ends on the
-            // server, but the player is still latency seconds behind).
+            // ── Ad-break lifecycle stepper ──────────────────────────────────────
+            // Tracks the event state locally so the panel stays visible even after the
+            // server removes the event (which happens when the ad ends on the server,
+            // but the player is still `latency` seconds behind).
+            //
+            // The /api/status poll (every 1s) is the TIMING BACKBONE: it gives fire_in_s
+            // (server clock to display) and duration_s. We extrapolate fire_in_s forward
+            // between polls and add the player live-latency so the countdown is smooth and
+            // reflects what THIS player will actually see. From that single "display time"
+            // we derive every stage boundary:
+            //     display_at  = now + (fireInS + latency)         seconds from now
+            //     prefetch_at = display_at − PREFETCH_LEAD_S       (5s, per morpheus)
+            //     end_at      = display_at + duration_s
+            // Real dash.js events (eventReadyToResolve, OverlayFetch metric) override the
+            // computed prefetch/loaded flags the instant they actually fire.
+            const PREFETCH_LEAD_S = 5; // morpheus earliestResolutionTime="5000" (ms)
+
+            // Step definitions, in lifecycle order. label is the stage name.
+            const AD_STEPS = [
+                { id: 'detected', label: 'Detected',  desc: 'opportunity known to player' },
+                { id: 'prefetch', label: 'Prefetch',  desc: 'early resolution (T−35s)' },
+                { id: 'loaded',   label: 'Image loaded', desc: 'creative pre-fetched' },
+                { id: 'showing',  label: 'Showing',   desc: 'ad on screen' },
+                { id: 'done',     label: 'Done',      desc: 'ad finished' },
+            ];
+
+            // Renders the five rows given a map of stepId → {state:'pending'|'active'|'done', note:string}.
+            function renderStepper(stepStates, headline) {
+                const ICONS = {
+                    pending: { ch: '◌', col: '#475569' },
+                    active:  { ch: '▶', col: '#a5b4fc' },
+                    done:    { ch: '✓', col: '#4ade80' },
+                };
+                const container = document.getElementById('ad-stepper-steps');
+                document.getElementById('ad-stepper-headline').textContent = headline || '';
+                container.innerHTML = AD_STEPS.map((step) => {
+                    const ss = stepStates[step.id] || { state: 'pending', note: '' };
+                    const ic = ICONS[ss.state] || ICONS.pending;
+                    const labelCol = ss.state === 'pending' ? '#64748b'
+                                   : ss.state === 'active'  ? '#e2e8f0' : '#cbd5e1';
+                    const weight = ss.state === 'active' ? '700' : '500';
+                    const note = ss.note
+                        ? `<span style="margin-left:auto; font-size:0.74rem; color:${ss.state==='active' ? '#fcd34d' : '#64748b'};">${ss.note}</span>`
+                        : '';
+                    return `<div id="step-${step.id}" style="display:flex; align-items:center; gap:0.5rem; padding:0.12rem 0;">
+                        <span style="color:${ic.col}; width:1.1em; text-align:center; font-size:0.95rem;">${ic.ch}</span>
+                        <span style="color:${labelCol}; font-weight:${weight};">${step.label}</span>
+                        <span style="color:#475569; font-size:0.72rem;">${step.desc}</span>
+                        ${note}
+                    </div>`;
+                }).join('');
+            }
+
+            function _fmtCountdown(s) {
+                if (s <= 0) return 'now';
+                if (s >= 60) return `${Math.floor(s/60)}m ${Math.ceil(s%60)}s`;
+                return `${s.toFixed(1)}s`;
+            }
+
+            // The poll (1s) only refreshes the timing backbone from /api/status. Rendering
+            // runs on a faster tick (renderAdPanel) so the countdowns stay smooth between
+            // polls — the latency-aware extrapolation already interpolates fire_in_s, this
+            // just paints it more often.
             async function pollAdStatus() {
                 try {
                     const r = await fetch('http://' + SVC_HOST + ':8000/api/status');
                     const j = await r.json();
-                    const panel = document.getElementById('ad-break-panel');
-                    const text  = document.getElementById('ad-break-text');
-                    const latency = (player && typeof player.getCurrentLiveLatency === 'function')
-                        ? player.getCurrentLiveLatency() : 0;
-
                     const apiEvent = (j.events || [])[0] || null;
                     if (apiEvent) {
                         if (!window._adEventState || window._adEventState.id !== apiEvent.id) {
@@ -360,12 +505,28 @@
                                 durationS: apiEvent.duration_s,
                                 lastFireInS: apiEvent.fire_in_s,
                                 lastSeenAt: Date.now(),
+                                detectedAt: Date.now(), // event first appeared in /api/status
+                                prefetchFiredAt: null,  // set by eventReadyToResolve OR OverlayFetch metric OR computed
+                                prefetchSource: null,
+                                loadedAt: null,          // set by OverlayFetch metric (real) or DOM observer (inferred)
+                                loadedSource: null,
+                                adStartedAt: null,
+                                showingDomAt: null,
                             };
                         } else {
                             window._adEventState.lastFireInS = apiEvent.fire_in_s;
                             window._adEventState.lastSeenAt = Date.now();
                         }
                     }
+                } catch (_) {}
+                renderAdPanel();
+            }
+
+            function renderAdPanel() {
+                try {
+                    const panel = document.getElementById('ad-break-panel');
+                    const latency = (player && typeof player.getCurrentLiveLatency === 'function')
+                        ? (player.getCurrentLiveLatency() || 0) : 0;
 
                     const state = window._adEventState;
                     if (!state) {
@@ -373,53 +534,103 @@
                         return;
                     }
 
-                    // Extrapolate fire_in_s forward from the last known API value
+                    // Extrapolate fire_in_s forward from the last known API value (smooth
+                    // between 1s polls) and shift by player latency to get THIS player's
+                    // time-to-display.
                     const elapsed = (Date.now() - state.lastSeenAt) / 1000;
-                    const fireInS = state.lastFireInS - elapsed;
-                    const playerFireIn = fireInS + latency;
+                    const fireInS = state.lastFireInS - elapsed;     // server clock → display
+                    const playerFireIn = fireInS + latency;          // this player → display
 
-                    // Once the ad starts playing, stamp the wall-clock time so the
-                    // remaining countdown is purely time-based and immune to latency drift.
+                    // Stamp wall-clock display moment once it arrives, so the "remaining"
+                    // countdown is purely time-based and immune to latency drift.
                     if (playerFireIn <= 0 && !state.adStartedAt) {
                         state.adStartedAt = Date.now();
                     }
 
+                    // Computed stage boundaries (seconds-from-now), backbone for countdowns.
+                    const prefetchInS = playerFireIn - PREFETCH_LEAD_S; // when early-resolution should fire
                     const remaining = state.adStartedAt
                         ? state.durationS - (Date.now() - state.adStartedAt) / 1000
                         : playerFireIn + state.durationS;
 
+                    // Reset cleanly between ad breaks once the ad has fully finished.
                     if (remaining <= 0) {
                         window._adEventState = null;
                         panel.style.display = 'none';
                         return;
                     }
 
+                    // If a real prefetch event hasn't fired yet but the computed window has
+                    // passed, treat prefetch as having occurred (computed fallback).
+                    if (!state.prefetchFiredAt && prefetchInS <= 0) {
+                        state.prefetchFiredAt = Date.now();
+                        state.prefetchSource = state.prefetchSource || 'computed';
+                    }
+
                     panel.style.display = 'block';
 
-                    if (!state.adStartedAt) {
-                        panel.style.background = '#1e3a2f';
-                        panel.style.border = '1px solid #166534';
-                        panel.style.color = '#86efac';
-                        const serverFiresInText = fireInS > 0
-                            ? `${fireInS.toFixed(1)}s`
-                            : 'Ad triggered by the server';
-                        text.innerHTML =
-                            `Ad break in ~${playerFireIn.toFixed(1)}s<br>` +
-                            `&nbsp;&nbsp;Server fires in: ${serverFiresInText}` +
-                            `<br>&nbsp;&nbsp;Player latency:&nbsp; ${latency.toFixed(1)}s`;
+                    // ── Derive each step's state + countdown ────────────────────────
+                    const ss = {};
+                    const showing = !!state.adStartedAt;
+                    const prefetched = !!state.prefetchFiredAt;
+                    const loaded = !!state.loadedAt;
+
+                    // 1) Detected — done as soon as we know about the opportunity.
+                    ss.detected = {
+                        state: 'done',
+                        note: showing ? '' : `display in ${_fmtCountdown(playerFireIn)}`,
+                    };
+
+                    // 2) Prefetch — pending until ~T−35s, active right around the fire, then done.
+                    if (showing || loaded) {
+                        ss.prefetch = { state: 'done', note: '' };
+                    } else if (prefetched) {
+                        ss.prefetch = { state: 'active', note: 'resolving…' };
                     } else {
-                        panel.style.background = '#1c1c2e';
-                        panel.style.border = '1px solid #6366f1';
-                        panel.style.color = '#a5b4fc';
-                        const mins = Math.floor(remaining / 60);
-                        const secs = Math.ceil(remaining % 60);
-                        text.innerHTML = `Ad break playing — ${mins > 0 ? mins + 'm ' : ''}${secs}s remaining`;
+                        ss.prefetch = { state: 'pending', note: `prefetch in ${_fmtCountdown(prefetchInS)}` };
                     }
+
+                    // 3) Image loaded — pending until the creative blob is fetched, then done.
+                    if (loaded) {
+                        ss.loaded = { state: 'done', note: '' };
+                    } else if (prefetched) {
+                        ss.loaded = { state: 'active', note: 'fetching creative…' };
+                    } else {
+                        ss.loaded = { state: 'pending', note: '' };
+                    }
+
+                    // 4) Showing — active while on screen, with a countdown to end.
+                    if (showing) {
+                        ss.showing = { state: 'active', note: `ends in ${_fmtCountdown(remaining)}` };
+                    } else {
+                        ss.showing = { state: 'pending', note: `starts in ${_fmtCountdown(playerFireIn)}` };
+                    }
+
+                    // 5) Done — only reached when remaining hits 0 (handled by reset above);
+                    //    shown as pending throughout the active lifecycle.
+                    ss.done = { state: 'pending', note: '' };
+
+                    // Panel accent + headline reflect the current phase.
+                    let headline;
+                    if (showing) {
+                        panel.style.borderColor = '#6366f1';
+                        headline = `▶ Showing — ${_fmtCountdown(remaining)} left`;
+                    } else if (prefetched) {
+                        panel.style.borderColor = '#f59e0b';
+                        headline = `⏳ Preparing — display in ${_fmtCountdown(playerFireIn)}`;
+                    } else {
+                        panel.style.borderColor = '#166534';
+                        headline = `display in ${_fmtCountdown(playerFireIn)}`;
+                    }
+
+                    renderStepper(ss, headline);
                 } catch (_) {}
             }
             if (window._adPollInterval) clearInterval(window._adPollInterval);
+            if (window._adRenderInterval) clearInterval(window._adRenderInterval);
             window._adEventState = null;
-            window._adPollInterval = setInterval(pollAdStatus, 1000);
+            window._adPollInterval = setInterval(pollAdStatus, 1000);      // timing backbone
+            window._adRenderInterval = setInterval(renderAdPanel, 200);    // smooth countdown
             pollAdStatus();
         }
 
