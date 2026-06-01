@@ -7,3 +7,6 @@
 [submodule "morpheus"]
 	path = morpheus
 	url = https://github.com/qualabs/morpheus
+[submodule "real-time-ad-gen"]
+	path = real-time-ad-gen
+	url = git@github.com:qualabs/real-time-ad-gen.git

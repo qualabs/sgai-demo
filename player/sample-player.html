@@ -37,6 +37,23 @@
         #alternative-video-element {
             display: none;
         }
+
+        details > summary {
+            cursor: pointer;
+            user-select: none;
+            font-weight: 600;
+            font-size: 0.85rem;
+            padding: 0.4rem 0;
+            list-style: none;
+        }
+        details > summary::-webkit-details-marker { display: none; }
+        details > summary::before {
+            content: '▶ ';
+            font-size: 0.7rem;
+        }
+        details[open] > summary::before {
+            content: '▼ ';
+        }
     </style>
 </head>
 
@@ -49,9 +66,18 @@
                 <h4 class="mb-0">SGAI Demo Player</h4>
             </header>
 
-            <div class="d-flex align-items-center gap-2 mb-3">
+            <div class="d-flex align-items-center gap-2 mb-2">
                 <input type="text" id="manifestUrl" class="form-control form-control-sm" value="http://localhost:8000/live.mpd" />
                 <button id="loadPlayer" class="btn btn-success btn-sm text-nowrap">Load Player</button>
+            </div>
+
+            <div class="mb-3 p-2 border rounded" style="background:#f8f9fa; font-size:0.82rem;">
+                <div class="d-flex align-items-center justify-content-between mb-1">
+                    <span class="text-muted fw-semibold" style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em;">Query Params</span>
+                    <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-2" onclick="addQueryParam()" style="font-size:0.75rem;">+ Add</button>
+                </div>
+                <div id="query-params-rows"></div>
+                <div class="mt-1 text-muted" id="url-preview" style="font-size:0.72rem; word-break:break-all; font-family:monospace;"></div>
             </div>
 
             <div class="dash-video-player mb-1">
@@ -71,8 +97,43 @@
                 <span id="ad-break-text"></span>
             </div>
 
-            <div class="mt-4">
-                <h5>Manifest Viewer <small class="text-muted" id="vod-mpd-age"></small></h5>
+            <details id="section-network" class="mt-4">
+                <summary>Network Requests</summary>
+                <div style="margin-top:0.5rem;">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <div class="d-flex align-items-center gap-2">
+                            <span id="network-count" class="text-muted" style="font-size:0.75rem;"></span>
+                            <select id="network-type-filter" class="form-select form-select-sm py-0"
+                                    style="font-size:0.72rem;width:auto;" onchange="_renderNetworkTable()">
+                                <option value="">All types</option>
+                                <option value="MPD">MPD</option>
+                                <option value="MediaSegment">Segment</option>
+                                <option value="InitializationSegment">Init</option>
+                                <option value="OverlayFetch">Overlay</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                                style="font-size:0.72rem;" onclick="clearNetworkLog()">Clear</button>
+                    </div>
+                    <div style="max-height:300px; overflow-y:auto; font-size:0.72rem; font-family:monospace;">
+                        <table class="table table-sm table-hover mb-0" id="network-table">
+                            <thead style="position:sticky;top:0;background:#fff;">
+                                <tr>
+                                    <th style="width:90px;">Type</th>
+                                    <th>URL</th>
+                                    <th style="width:55px;">Status</th>
+                                    <th style="width:60px;">Size</th>
+                                    <th style="width:60px;">ms</th>
+                                </tr>
+                            </thead>
+                            <tbody id="network-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </details>
+
+            <details id="section-manifest" class="mt-4" open>
+                <summary>Manifest Viewer <small class="text-muted fw-normal" id="vod-mpd-age"></small></summary>
                 <pre id="vod-mpd-viewer" style="
                     background:#f8f9fa;
                     border:1px solid #dee2e6;
@@ -84,7 +145,7 @@
                     white-space:pre;
                     word-break:break-all;
                 ">Load a player to see the manifest…</pre>
-            </div>
+            </details>
 
             <footer class="pt-3 mt-4 text-muted border-top">
                 &copy; DASH-IF
@@ -95,12 +156,109 @@
     <script class="code">
         let player;
 
+        // ── Network panel ──────────────────────────────────────────────────────
+        const MAX_NETWORK_ROWS = 100;
+        let networkRows = [];
+
+        const TYPE_LABELS = {
+            'MPD':                   { label: 'MPD',     cls: 'text-primary' },
+            'MediaSegment':          { label: 'Segment', cls: 'text-success' },
+            'InitializationSegment': { label: 'Init',    cls: 'text-info'    },
+            'OverlayFetch':          { label: 'Overlay', cls: 'text-warning' },
+        };
+
+        function _typeInfo(type) {
+            return TYPE_LABELS[type] || { label: type || '?', cls: 'text-muted' };
+        }
+
+        function _fmtSize(bytes) {
+            if (!bytes) return '—';
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
+        function _fmtUrl(url) {
+            try {
+                const u = new URL(url);
+                const display = (u.pathname.split('/').pop() || u.pathname) + u.search;
+                return `<span title="${url.replace(/"/g, '&quot;')}">${display || url}</span>`;
+            } catch (_) { return url; }
+        }
+
+        function onMetricAdded(e) {
+            if (e.metric !== 'HttpList' || !e.value) return;
+            const req = e.value;
+            const duration = (req.trequest && req._tfinish)
+                ? Math.round(req._tfinish - req.trequest)
+                : null;
+            const bytes = req.trace
+                ? req.trace.reduce((s, t) => s + (t.b ? t.b.reduce((a, b) => a + b, 0) : 0), 0)
+                : 0;
+            addNetworkRow(req.type, req.url, req.responsecode, bytes, duration);
+        }
+
+        function addNetworkRow(type, url, responsecode, bytes, durationMs) {
+            const { label, cls } = _typeInfo(type);
+            const statusCls = responsecode >= 400 ? 'text-danger fw-bold'
+                            : responsecode >= 300 ? 'text-warning' : '';
+            const row = { type, html: `<tr>
+                <td class="${cls}">${label}</td>
+                <td>${_fmtUrl(url)}</td>
+                <td class="${statusCls}">${responsecode || '—'}</td>
+                <td>${_fmtSize(bytes)}</td>
+                <td>${durationMs != null ? durationMs : '—'}</td>
+            </tr>` };
+            networkRows.unshift(row);
+            if (networkRows.length > MAX_NETWORK_ROWS) networkRows.pop();
+            _renderNetworkTable();
+        }
+
+        function _renderNetworkTable() {
+            const filter = document.getElementById('network-type-filter')?.value || '';
+            const visible = filter ? networkRows.filter(r => r.type === filter) : networkRows;
+            document.getElementById('network-tbody').innerHTML = visible.map(r => r.html).join('');
+            document.getElementById('network-count').textContent =
+                `${visible.length}/${networkRows.length} request${networkRows.length !== 1 ? 's' : ''}`;
+        }
+
+        function clearNetworkLog() {
+            networkRows = [];
+            _renderNetworkTable();
+        }
+
+        function addQueryParam() {
+            const row = document.createElement('div');
+            row.className = 'd-flex align-items-center gap-1 mb-1';
+            row.innerHTML = `
+                <input type="text" class="form-control form-control-sm qp-key" placeholder="key" style="flex:1;" oninput="buildMpdUrl()" />
+                <input type="text" class="form-control form-control-sm qp-val" placeholder="value" style="flex:2;" oninput="buildMpdUrl()" />
+                <button type="button" class="btn btn-outline-danger btn-sm py-0 px-1" onclick="this.parentElement.remove(); buildMpdUrl();" style="font-size:0.75rem;">✕</button>`;
+            document.getElementById('query-params-rows').appendChild(row);
+            buildMpdUrl();
+        }
+
+        function buildMpdUrl() {
+            const base = document.getElementById('manifestUrl').value.split('?')[0];
+            const params = new URLSearchParams();
+            document.querySelectorAll('#query-params-rows > div').forEach(row => {
+                const k = row.querySelector('.qp-key').value.trim();
+                const v = row.querySelector('.qp-val').value;
+                if (k) params.append(k, v);
+            });
+            const qs = params.toString();
+            const url = qs ? `${base}?${qs}` : base;
+            document.getElementById('url-preview').textContent = qs ? url : '';
+            return url;
+        }
+
         function init() {
             document.getElementById('loadPlayer').addEventListener('click', loadPlayer);
+            document.getElementById('manifestUrl').addEventListener('input', buildMpdUrl);
         }
 
         function loadPlayer() {
-            const manifestUrl = document.getElementById('manifestUrl').value;
+            const manifestUrl = buildMpdUrl();
             const video = document.getElementById('video-element');
             const alternativeVideo = document.getElementById('alternative-video-element');
             const overlay = document.getElementById('overlay');
@@ -123,7 +281,7 @@
 
             player.updateSettings({
                 debug: {
-                    // logLevel: 5
+                    logLevel: 5
                 },
                 streaming: {
                     delay: {
@@ -152,6 +310,10 @@
             });
 
             player.attachSource(manifestUrl);
+
+            player.off(dashjs.MediaPlayer.events.METRIC_ADDED, onMetricAdded);
+            player.on(dashjs.MediaPlayer.events.METRIC_ADDED, onMetricAdded);
+            clearNetworkLog();
 
             // Latency stats
             document.getElementById('latency-stats').style.display = 'block';

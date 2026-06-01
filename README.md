@@ -1,8 +1,8 @@
 # sgai-demo
 
-A demo environment that wires together four Qualabs projects into a single `docker compose up` command, showcasing Server-Guided Ad Insertion (SGAI) for MPEG-DASH with CMCD v2 reporting.
+A demo environment that wires together Qualabs projects into a single `docker compose up` command, showcasing Server-Guided Ad Insertion (SGAI) for MPEG-DASH with CMCD v2 reporting.
 
-The stack streams a live DASH manifest, injects SCTE-35 ad break markers, converts them to VAST-based alternative content via SGAI, and plays everything back in a CMCD-instrumented fork of dash.js.
+The stack streams a live DASH manifest, injects SCTE-35 ad break markers, converts them to VAST-based alternative content or real-time AI-generated overlay ads via SGAI, and plays everything back in a CMCD-instrumented fork of dash.js.
 
 ---
 
@@ -55,6 +55,9 @@ sequenceDiagram
 | 8080 | `morpheus` | MPEG-DASH manifest server with SCTE-35 → SGAI conversion |
 | 8000 | `live-sim` | Live stream simulator — FFmpeg + SCTE-35 injector + ListMPD proxy |
 | 3000 | `vast-2-sgai` | VAST-to-SGAI adapter — converts VAST XML into DASH ListMPDs |
+| 8888 | `api` (real-time-ad-gen) | Real-time AI ad generator — generates overlay images via Gemini |
+| 3002 | `ui` (real-time-ad-gen) | Template manager UI for the ad generator |
+| 8081 | `mongo-express` (real-time-ad-gen) | MongoDB admin UI |
 
 ### `morpheus` — MPEG-DASH server ([qualabs/morpheus](https://github.com/qualabs/morpheus), branch: `feat/scte-to-overlay`)
 Custom Nginx module that converts SCTE-35 markers in the incoming MPD into `<ReplacePresentation>` and `<OverlayEvent>` SGAI events and serves the patched manifest to the player.
@@ -64,6 +67,9 @@ Python/aiohttp service that runs FFmpeg to generate a live DASH stream, injects 
 
 ### `vast-2-sgai` — VAST adapter ([qualabs/vast-2-sgai](https://github.com/qualabs/vast-2-sgai), branch: `main`)
 Node.js service that parses a VAST XML file and generates a DASH ListMPD with ad tracking events mapped to `presentationTime` values.
+
+### `real-time-ad-gen` — AI overlay ad generator ([qualabs/real-time-ad-gen](https://github.com/qualabs/real-time-ad-gen))
+FastAPI service that generates personalized ad images using Google Gemini. Accepts a template ID and query parameters, returns a PNG cached by SHA-256. Includes a MongoDB backend (GridFS) and a template manager UI.
 
 ### `dashjs` — instrumented player ([qualabs/dash.js](https://github.com/qualabs/dash.js), branch: `sgai/alternative-overlays`)
 Fork of dash.js with CMCD v2, SGAI alternative-content and overlays support. Served via webpack dev server.
@@ -109,11 +115,19 @@ Key variables in `.env`:
 |----------|-------------|
 | `VAST2SGAI_URL` | Internal URL for vast-2-sgai (default: `http://vast-2-sgai:3000`) |
 | `MORPHEUS_URL` | Internal URL for Morpheus (default: `http://morpheus`) |
+| `REAL_TIME_AD_GEN_URL` | Internal URL for the ad generator API (default: `http://api:8000`) |
 
 `vast-2-sgai` uses its own `.env` inside the submodule:
 
 ```bash
 cp vast-2-sgai/.env.example vast-2-sgai/.env
+```
+
+`real-time-ad-gen` also requires its own `.env` — copy the example and set your Gemini API key:
+
+```bash
+cp real-time-ad-gen/.env.example real-time-ad-gen/.env
+# Edit real-time-ad-gen/.env: set GOOGLE_API_KEY
 ```
 
 ### 3. Build and start all services
@@ -161,6 +175,7 @@ The submodules are pinned to specific commits that are known to work with this d
 | `dash.js` | `4ff27660fadf4f65a0631bb4bbfd475c1ef84857` |
 | `morpheus` | `ff0cb483b8a34d0b5ea601c7f6b4b580c7213bfb` |
 | `vast-2-sgai` | `0964dcfb3aa74ad0a8631316decc76ac3c6e6449` |
+| `real-time-ad-gen` | `be96f5fcc21f61af867ba6dbfb40f1fe40d0d077` |
 
 If you update a submodule and the demo breaks, reset it to the pinned commit:
 
