@@ -174,9 +174,12 @@ def patch_mpd(raw_xml: str, active_events: list[dict]) -> str:
     if period is None:
         raise ValueError("No <Period> found in MPD")
 
-    # Add BaseURL so the player can fetch segments from us
+    # Add BaseURL so the player can fetch segments from us. Relative so the
+    # player resolves it against the manifest's own host — works whether the
+    # manifest is loaded via localhost or a LAN IP. (Requires the player to
+    # load the manifest directly from live-sim; segments are served here.)
     base_url_el = ET.Element(_ns("BaseURL"))
-    base_url_el.text = f"http://localhost:{SERVER_PORT}/segments/"
+    base_url_el.text = "segments/"
     period.insert(0, base_url_el)
 
     # Inject SCTE-35 EventStream before AdaptationSets
