@@ -285,15 +285,15 @@
   <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
     <tr>
       <td style="color:#64748b;white-space:nowrap;padding:0.25rem 0.75rem 0.25rem 0;vertical-align:middle;">live-sim</td>
-      <td class="manifest-url" style="padding:0.25rem 0;">http://localhost:8000/live.mpd</td>
+      <td class="manifest-url" id="mu-livesim" style="padding:0.25rem 0;">http://localhost:8000/live.mpd</td>
     </tr>
     <tr>
       <td style="color:#64748b;white-space:nowrap;padding:0.25rem 0.75rem 0.25rem 0;vertical-align:middle;">live-sim (SCTE-35)</td>
-      <td class="manifest-url" style="padding:0.25rem 0;">http://localhost:8000/live_scte35.mpd</td>
+      <td class="manifest-url" id="mu-livesim-scte" style="padding:0.25rem 0;">http://localhost:8000/live_scte35.mpd</td>
     </tr>
     <tr>
       <td style="color:#64748b;white-space:nowrap;padding:0.25rem 0.75rem 0.25rem 0;vertical-align:middle;">morpheus</td>
-      <td class="manifest-url" style="padding:0.25rem 0;">http://localhost:8080/live.mpd</td>
+      <td class="manifest-url" id="mu-morpheus" style="padding:0.25rem 0;">http://localhost:8080/live.mpd</td>
     </tr>
   </table>
 </div>
@@ -492,6 +492,16 @@
   }
   setInterval(pollLogs, 2000);
   pollLogs();
+
+  // Render the displayed manifest URLs against the host the panel was opened
+  // from, so they're correct whether accessed via localhost or a LAN IP.
+  (function setManifestUrls() {
+    const origin = location.protocol + '//' + location.hostname;
+    const set = (id, url) => { const el = document.getElementById(id); if (el) el.textContent = url; };
+    set('mu-livesim', origin + ':8000/live.mpd');
+    set('mu-livesim-scte', origin + ':8000/live_scte35.mpd');
+    set('mu-morpheus', origin + ':8080/live.mpd');
+  })();
 </script>
 </body>
 </html>
