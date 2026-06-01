@@ -5,11 +5,20 @@
     <meta charset="utf-8">
     <title>VOD Player</title>
 
-    <script src="http://localhost:3003/dist/modern/umd/dash.all.debug.js"></script>
+    <script>
+        // Resolve service hosts against the host the page was opened from,
+        // so the player works whether opened via localhost or a LAN IP (e.g. 192.168.x.x).
+        window.SVC_HOST = location.hostname;
+        document.write('<scr' + 'ipt src="http://' + SVC_HOST + ':3003/dist/modern/umd/dash.all.debug.js"><\/scr' + 'ipt>');
+    </script>
 
     <!-- Bootstrap core CSS -->
-    <link href="http://localhost:3003/samples/lib/bootstrap/bootstrap.min.css" rel="stylesheet">
-    <link href="http://localhost:3003/samples/lib/main.css" rel="stylesheet">
+    <link id="bootstrapCss" rel="stylesheet">
+    <link id="mainCss" rel="stylesheet">
+    <script>
+        document.getElementById('bootstrapCss').href = 'http://' + SVC_HOST + ':3003/samples/lib/bootstrap/bootstrap.min.css';
+        document.getElementById('mainCss').href = 'http://' + SVC_HOST + ':3003/samples/lib/main.css';
+    </script>
 
     <style>
         .videoContainer {
@@ -62,12 +71,12 @@
     <main>
         <div class="container py-4">
             <header class="pb-3 mb-3 border-bottom d-flex align-items-center gap-3">
-                <img src="http://localhost:3003/samples/lib/img/dashjs-logo.png" width="160">
+                <img id="dashLogo" width="160">
                 <h4 class="mb-0">SGAI Demo Player</h4>
             </header>
 
             <div class="d-flex align-items-center gap-2 mb-2">
-                <input type="text" id="manifestUrl" class="form-control form-control-sm" value="http://localhost:8000/live.mpd" />
+                <input type="text" id="manifestUrl" class="form-control form-control-sm" />
                 <button id="loadPlayer" class="btn btn-success btn-sm text-nowrap">Load Player</button>
             </div>
 
@@ -253,6 +262,8 @@
         }
 
         function init() {
+            document.getElementById('manifestUrl').value = 'http://' + SVC_HOST + ':8000/live.mpd';
+            document.getElementById('dashLogo').src = 'http://' + SVC_HOST + ':3003/samples/lib/img/dashjs-logo.png';
             document.getElementById('loadPlayer').addEventListener('click', loadPlayer);
             document.getElementById('manifestUrl').addEventListener('input', buildMpdUrl);
         }
@@ -334,7 +345,7 @@
             // server, but the player is still latency seconds behind).
             async function pollAdStatus() {
                 try {
-                    const r = await fetch('http://localhost:8000/api/status');
+                    const r = await fetch('http://' + SVC_HOST + ':8000/api/status');
                     const j = await r.json();
                     const panel = document.getElementById('ad-break-panel');
                     const text  = document.getElementById('ad-break-text');
