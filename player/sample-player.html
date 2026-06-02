@@ -107,7 +107,7 @@
                  right-hand cell shows a live countdown to the next transition. -->
             <div id="ad-break-panel" style="display:none; margin-top:0.5rem; padding:0.6rem 0.8rem; border-radius:8px; font-size:0.8rem; font-family:'SF Mono',Menlo,Consolas,monospace; background:#13131f; border:1px solid #2a2a40; color:#cbd5e1;">
                 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.45rem;">
-                    <span id="ad-stepper-title" style="font-weight:700; letter-spacing:0.04em; text-transform:uppercase; font-size:0.7rem; color:#94a3b8;">Ad Break Lifecycle</span>
+                    <span id="ad-stepper-title" style="font-weight:700; letter-spacing:0.04em; text-transform:uppercase; font-size:0.7rem; color:#94a3b8;">AD Overlay Lifecycle</span>
                     <span id="ad-stepper-headline" style="font-size:0.74rem; color:#a5b4fc;"></span>
                 </div>
                 <div id="ad-stepper-steps" style="display:flex; flex-direction:column; gap:0.18rem;">
@@ -218,12 +218,14 @@
             // REAL "image loaded" signal: OverlayController triggers an 'OverlayFetch'
             // metric the moment the creative blob finishes downloading (and entry.resolved
             // is set true). See dash.js OverlayController.js:244-255. This means the ad
-            // creative is pre-loaded and ready before display.
+            // creative is pre-loaded and ready before display. Only the iframe-prefetch
+            // path emits it; for non-prefetch overlays this never fires (treated as N/A).
             if (req.type === 'OverlayFetch') {
-                const st = window._adEventState;
-                if (st) {
-                    if (!st.prefetchFiredAt) { st.prefetchFiredAt = Date.now(); st.prefetchSource = st.prefetchSource || 'metric'; }
-                    if (!st.loadedAt) { st.loadedAt = Date.now(); st.loadedSource = 'overlay-fetch'; }
+                const o = window._adOverlay;
+                if (o) {
+                    console.log('[stepper] OverlayFetch metric → creative loaded', { id: o.id, url: req.url });
+                    o.prefetched = true;   // a fetch implies prefetch already kicked in
+                    o.loaded = true;
                 }
             }
         }
@@ -348,68 +350,102 @@
             clearNetworkLog();
 
             // ── Real dash.js overlay-lifecycle events ───────────────────────────
-            // We layer real player events on top of the /api/status timing backbone.
-            // The state machine flags live on window._adEventState (created by the poll).
+            // Timing for the stepper comes EXCLUSIVELY from the player: the dash.js
+            // OverlayEvent payload (presentationTime, duration) gives the media-clock
+            // boundaries, and player.time() (the media clock) drives every countdown and
+            // transition. There is NO server poll, no latency math, no extrapolation.
+            //
+            //  • DETECTED: we subscribe to the overlay scheme event
+            //    'urn:scte:dash:scte214-events' (Constants.OVERLAY.SCHEME_ID) in
+            //    ON_RECEIVE mode. The {mode:'eventModeOnReceive'} option is REQUIRED
+            //    (EventBus.js:139): without it dash.js only delivers the ON_START firing,
+            //    which happens at display time — too late, and it fails silently. On
+            //    receive we read event.presentationTime (ms), event.duration (seconds at
+            //    this layer — OverlayController compares presentationTime+duration against
+            //    media-clock seconds, see OverlayController.js:313-318) and event.overlay
+            //    (mimeType / earliestResolutionTime / uri / mode).
             //
             //  • PREFETCH:  CoreEvents.EVENT_READY_TO_RESOLVE ('eventReadyToResolve') is
-            //    fired by EventController when an event reaches its earliestResolutionTime
-            //    (morpheus sets earliestResolutionTime="35000" → ~35s before display).
-            //    See dash.js: src/streaming/controllers/EventController.js:589-601 and
-            //    src/core/events/CoreEvents.js:45. It is an INTERNAL event but the public
-            //    player.on() forwards straight to the shared singleton EventBus
-            //    (MediaPlayer.js:557), so we can subscribe to the raw string.
+            //    fired by EventController when an event reaches its earliestResolutionTime.
+            //    It may NOT fire for the overlay path (it's gated on the alt-MPD
+            //    earliestResolutionTimeOffset), so we ALSO mark prefetched via the media
+            //    clock in the render tick. Whichever happens first wins.
             //
             //  • IMAGE LOADED: OverlayController._prefetchIframeContent() fetches the
-            //    creative as a blob and, on success, triggers a 'metricAdded' of
-            //    type 'OverlayFetch' (HTTPRequest.OVERLAY_TYPE). That is the REAL
-            //    "creative resolved / pre-loaded" signal. See OverlayController.js:225-258.
-            //    We mark loaded when an OverlayFetch metric lands (handled in onMetricAdded
-            //    below via _markAdLoaded). As a secondary/inferred signal we also watch the
-            //    #overlay div with a MutationObserver for an <iframe> being inserted.
-            //
-            //  • DETECTED: the overlay scheme event 'urn:scte:dash:scte214-events'
-            //    (Constants.OVERLAY.SCHEME_ID) is dispatched to OverlayController and to us.
-            //    Detection is also covered by the event appearing in /api/status, so the
-            //    scheme subscription is a belt-and-suspenders confirmation.
+            //    creative as a blob and triggers a 'metricAdded' of type 'OverlayFetch'.
+            //    That is the REAL "creative pre-loaded" signal (handled in onMetricAdded).
+            //    Only the iframe-prefetch path emits it; if !usesPrefetch we treat loaded
+            //    as N/A and don't block showing.
             const EVENT_READY_TO_RESOLVE = 'eventReadyToResolve';      // CoreEvents.js:45
             const OVERLAY_SCHEME_ID      = 'urn:scte:dash:scte214-events'; // Constants.js OVERLAY.SCHEME_ID
 
-            function _onEventReadyToResolve(e) {
-                // Fired at display_time − earliestResolutionTime (the prefetch trigger).
-                const st = window._adEventState;
-                if (!st) return;
-                if (!st.prefetchFiredAt) {
-                    st.prefetchFiredAt = Date.now();
-                    st.prefetchSource = 'event'; // real dash.js event, not computed
+            // DETECTED — overlay scheme event in ON_RECEIVE mode (fires well before display).
+            function _onOverlayReceive(payload) {
+                const event = payload && payload.event;
+                if (!event || !event.overlay) {
+                    console.log('[stepper] scte214-events received but no event.overlay', payload);
+                    return;
+                }
+                // Units note: presentationTime is ms; duration arrives normalized by the
+                // EventStream timescale and is consumed as SECONDS at the OverlayController
+                // comparison layer. Log it so the conversion can be confirmed at runtime.
+                console.log('[stepper] overlay', {
+                    pt: event.presentationTime,
+                    dur: event.duration,
+                    mode: event.overlay.mode,
+                    mimeType: event.overlay.mimeType,
+                    earliestResolutionTime: event.overlay.earliestResolutionTime,
+                    id: event.id,
+                });
+                // Ignore stop-mode events for creation; use them as a done confirmation.
+                if (event.overlay.mode === 'stop') {
+                    const o = window._adOverlay;
+                    if (o && (event.overlay.refId == o.id || event.id == o.id)) {
+                        console.log('[stepper] stop-mode → done confirmation', { id: o.id });
+                        o.done = true;
+                    }
+                    return;
+                }
+                window._adOverlay = {
+                    id: event.id,
+                    presentationTime: event.presentationTime / 1000,   // seconds, media clock
+                    duration: event.duration,                          // seconds (see units note)
+                    lead: (event.overlay.earliestResolutionTime || 5000) / 1000,
+                    usesPrefetch: event.overlay.mimeType === 'text/html' && event.overlay.earliestResolutionTime > 0,
+                    prefetched: false, loaded: false, showing: false, done: false,
+                };
+                console.log('[stepper] DETECTED → _adOverlay created', window._adOverlay);
+            }
+
+            // PREFETCH — real dash.js early-resolution event (may not fire for overlays).
+            function _onEventReadyToResolve(_e) {
+                const o = window._adOverlay;
+                if (o && !o.prefetched) {
+                    console.log('[stepper] eventReadyToResolve → prefetched=true (real event)', { id: o.id });
+                    o.prefetched = true;
                 }
             }
-            function _onOverlaySchemeEvent(_e) {
-                // Confirms the overlay opportunity is known to the player.
-                const st = window._adEventState;
-                if (st) st.detectedConfirmedByEvent = true;
-            }
 
+            player.off(OVERLAY_SCHEME_ID, _onOverlayReceive);
+            player.on(OVERLAY_SCHEME_ID, _onOverlayReceive, null, { mode: 'eventModeOnReceive' });
             player.off(EVENT_READY_TO_RESOLVE, _onEventReadyToResolve);
             player.on(EVENT_READY_TO_RESOLVE, _onEventReadyToResolve);
-            player.off(OVERLAY_SCHEME_ID, _onOverlaySchemeEvent);
-            player.on(OVERLAY_SCHEME_ID, _onOverlaySchemeEvent);
 
-            // Inferred "image loaded" fallback: watch the overlay rendering div for an
-            // <iframe>/<img> insertion and use its load event. The primary signal is the
-            // OverlayFetch metric (real); this only fires if that somehow didn't.
+            // Secondary showing/done confirmation only: watch the overlay rendering div for
+            // an <iframe>/<img>/<video> insertion (the element appearing means the overlay
+            // is on screen). Timing remains driven by the media clock; this is belt-and-
+            // suspenders for the showing flag.
             if (window._adOverlayObserver) window._adOverlayObserver.disconnect();
             window._adOverlayObserver = new MutationObserver((mutations) => {
-                const st = window._adEventState;
-                if (!st) return;
+                const o = window._adOverlay;
+                if (!o) return;
                 for (const m of mutations) {
                     m.addedNodes && m.addedNodes.forEach((node) => {
                         if (!node || !node.tagName) return;
                         const tag = node.tagName.toUpperCase();
                         if (tag === 'IFRAME' || tag === 'IMG' || tag === 'VIDEO') {
-                            // The element is now in the DOM → showing has begun.
-                            if (!st.showingDomAt) st.showingDomAt = Date.now();
-                            const onload = () => { if (st && !st.loadedAt) { st.loadedAt = Date.now(); st.loadedSource = st.loadedSource || 'inferred-dom'; } };
-                            node.addEventListener && node.addEventListener('load', onload, { once: true });
+                            if (!o.showing) console.log('[stepper] overlay element in DOM → showing (observer)', { id: o.id, tag });
+                            o.showing = true;
                         }
                     });
                 }
@@ -431,26 +467,20 @@
             }, 1000);
 
             // ── Ad-break lifecycle stepper ──────────────────────────────────────
-            // Tracks the event state locally so the panel stays visible even after the
-            // server removes the event (which happens when the ad ends on the server,
-            // but the player is still `latency` seconds behind).
-            //
-            // The /api/status poll (every 1s) is the TIMING BACKBONE: it gives fire_in_s
-            // (server clock to display) and duration_s. We extrapolate fire_in_s forward
-            // between polls and add the player live-latency so the countdown is smooth and
-            // reflects what THIS player will actually see. From that single "display time"
-            // we derive every stage boundary:
-            //     display_at  = now + (fireInS + latency)         seconds from now
-            //     prefetch_at = display_at − PREFETCH_LEAD_S       (5s, per morpheus)
-            //     end_at      = display_at + duration_s
-            // Real dash.js events (eventReadyToResolve, OverlayFetch metric) override the
-            // computed prefetch/loaded flags the instant they actually fire.
-            const PREFETCH_LEAD_S = 5; // morpheus earliestResolutionTime="5000" (ms)
+            // Timing is driven EXCLUSIVELY by the player. The OverlayEvent payload gives
+            // the media-clock boundaries (presentationTime `pt`, duration `dur`) and the
+            // media clock `player.time()` (`t`) drives every transition and countdown:
+            //     displayIn = pt − t            (seconds until the ad shows)
+            //     endsIn    = (pt + dur) − t     (seconds until it ends)
+            //     showing   = t >= pt
+            //     done      = t >= pt + dur
+            //     prefetch  = t >= pt − lead     (or the real eventReadyToResolve / OverlayFetch)
+            // No server poll, no live-latency, no extrapolation.
 
             // Step definitions, in lifecycle order. label is the stage name.
             const AD_STEPS = [
                 { id: 'detected', label: 'Detected',  desc: 'opportunity known to player' },
-                { id: 'prefetch', label: 'Prefetch',  desc: 'early resolution (T−35s)' },
+                { id: 'prefetch', label: 'Prefetch',  desc: 'early resolution (T−lead)' },
                 { id: 'loaded',   label: 'Image loaded', desc: 'creative pre-fetched' },
                 { id: 'showing',  label: 'Showing',   desc: 'ad on screen' },
                 { id: 'done',     label: 'Done',      desc: 'ad finished' },
@@ -489,109 +519,74 @@
                 return `${s.toFixed(1)}s`;
             }
 
-            // The poll (1s) only refreshes the timing backbone from /api/status. Rendering
-            // runs on a faster tick (renderAdPanel) so the countdowns stay smooth between
-            // polls — the latency-aware extrapolation already interpolates fire_in_s, this
-            // just paints it more often.
-            async function pollAdStatus() {
-                try {
-                    const r = await fetch('http://' + SVC_HOST + ':8000/api/status');
-                    const j = await r.json();
-                    const apiEvent = (j.events || [])[0] || null;
-                    if (apiEvent) {
-                        if (!window._adEventState || window._adEventState.id !== apiEvent.id) {
-                            window._adEventState = {
-                                id: apiEvent.id,
-                                durationS: apiEvent.duration_s,
-                                lastFireInS: apiEvent.fire_in_s,
-                                lastSeenAt: Date.now(),
-                                detectedAt: Date.now(), // event first appeared in /api/status
-                                prefetchFiredAt: null,  // set by eventReadyToResolve OR OverlayFetch metric OR computed
-                                prefetchSource: null,
-                                loadedAt: null,          // set by OverlayFetch metric (real) or DOM observer (inferred)
-                                loadedSource: null,
-                                adStartedAt: null,
-                                showingDomAt: null,
-                            };
-                        } else {
-                            window._adEventState.lastFireInS = apiEvent.fire_in_s;
-                            window._adEventState.lastSeenAt = Date.now();
-                        }
-                    }
-                } catch (_) {}
-                renderAdPanel();
-            }
-
+            // Single render tick — pure media clock. The OverlayEvent payload (created in
+            // _onOverlayReceive) is the only source of pt/dur/lead; player.time() is the
+            // only clock. No /api/status, no latency, no extrapolation.
             function renderAdPanel() {
                 try {
                     const panel = document.getElementById('ad-break-panel');
-                    const latency = (player && typeof player.getCurrentLiveLatency === 'function')
-                        ? (player.getCurrentLiveLatency() || 0) : 0;
+                    const o = window._adOverlay;
 
-                    const state = window._adEventState;
-                    if (!state) {
+                    // Media clock: player.time() throws before playback init (MediaPlayer.js:1027).
+                    let t = null;
+                    try { t = player.time(); } catch (e) { t = null; }
+
+                    if (t == null || !o) {
                         panel.style.display = 'none';
                         return;
                     }
 
-                    // Extrapolate fire_in_s forward from the last known API value (smooth
-                    // between 1s polls) and shift by player latency to get THIS player's
-                    // time-to-display.
-                    const elapsed = (Date.now() - state.lastSeenAt) / 1000;
-                    const fireInS = state.lastFireInS - elapsed;     // server clock → display
-                    const playerFireIn = fireInS + latency;          // this player → display
+                    const pt   = o.presentationTime;        // seconds, media clock
+                    const dur  = o.duration;                // seconds
+                    const lead = o.lead;                    // seconds before pt to prefetch
 
-                    // Stamp wall-clock display moment once it arrives, so the "remaining"
-                    // countdown is purely time-based and immune to latency drift.
-                    if (playerFireIn <= 0 && !state.adStartedAt) {
-                        state.adStartedAt = Date.now();
+                    const displayIn = pt - t;               // seconds until the ad shows
+                    const endsIn    = (pt + dur) - t;        // seconds until it ends
+
+                    // Prefetch via the clock (whichever fires first with the real event).
+                    if (!o.prefetched && t >= pt - lead) {
+                        console.log('[stepper] prefetched=true (clock)', { id: o.id, t, pt, lead });
+                        o.prefetched = true;
                     }
 
-                    // Computed stage boundaries (seconds-from-now), backbone for countdowns.
-                    const prefetchInS = playerFireIn - PREFETCH_LEAD_S; // when early-resolution should fire
-                    const remaining = state.adStartedAt
-                        ? state.durationS - (Date.now() - state.adStartedAt) / 1000
-                        : playerFireIn + state.durationS;
-
-                    // Reset cleanly between ad breaks once the ad has fully finished.
-                    if (remaining <= 0) {
-                        window._adEventState = null;
-                        panel.style.display = 'none';
-                        return;
+                    // Showing / Done transitions — log on first crossing.
+                    if (!o.showing && t >= pt) {
+                        console.log('[stepper] SHOWING (clock)', { id: o.id, t, pt });
+                        o.showing = true;
                     }
-
-                    // If a real prefetch event hasn't fired yet but the computed window has
-                    // passed, treat prefetch as having occurred (computed fallback).
-                    if (!state.prefetchFiredAt && prefetchInS <= 0) {
-                        state.prefetchFiredAt = Date.now();
-                        state.prefetchSource = state.prefetchSource || 'computed';
+                    if (!o.done && t >= pt + dur) {
+                        console.log('[stepper] DONE (clock)', { id: o.id, t, end: pt + dur });
+                        o.done = true;
                     }
 
                     panel.style.display = 'block';
 
                     // ── Derive each step's state + countdown ────────────────────────
                     const ss = {};
-                    const showing = !!state.adStartedAt;
-                    const prefetched = !!state.prefetchFiredAt;
-                    const loaded = !!state.loadedAt;
+                    const showing = o.showing;
+                    const done = o.done;
+                    const prefetched = o.prefetched;
 
-                    // 1) Detected — done as soon as we know about the opportunity.
+                    // 1) Detected — done as soon as the overlay event was received.
                     ss.detected = {
                         state: 'done',
-                        note: showing ? '' : `display in ${_fmtCountdown(playerFireIn)}`,
+                        note: (showing || done) ? '' : `display in ${_fmtCountdown(displayIn)}`,
                     };
 
-                    // 2) Prefetch — pending until ~T−35s, active right around the fire, then done.
-                    if (showing || loaded) {
+                    // 2) Prefetch — pending until t≥pt−lead, active around the fire, then done.
+                    if (showing || done || (o.usesPrefetch && o.loaded)) {
                         ss.prefetch = { state: 'done', note: '' };
                     } else if (prefetched) {
                         ss.prefetch = { state: 'active', note: 'resolving…' };
                     } else {
-                        ss.prefetch = { state: 'pending', note: `prefetch in ${_fmtCountdown(prefetchInS)}` };
+                        ss.prefetch = { state: 'pending', note: `prefetch in ${_fmtCountdown(displayIn - lead)}` };
                     }
 
                     // 3) Image loaded — pending until the creative blob is fetched, then done.
-                    if (loaded) {
+                    //    N/A (auto-done) when the overlay doesn't use the prefetch path.
+                    if (!o.usesPrefetch) {
+                        ss.loaded = { state: 'done', note: 'n/a' };
+                    } else if (o.loaded) {
                         ss.loaded = { state: 'done', note: '' };
                     } else if (prefetched) {
                         ss.loaded = { state: 'active', note: 'fetching creative…' };
@@ -600,38 +595,51 @@
                     }
 
                     // 4) Showing — active while on screen, with a countdown to end.
-                    if (showing) {
-                        ss.showing = { state: 'active', note: `ends in ${_fmtCountdown(remaining)}` };
+                    if (done) {
+                        ss.showing = { state: 'done', note: '' };
+                    } else if (showing) {
+                        ss.showing = { state: 'active', note: `ends in ${_fmtCountdown(endsIn)}` };
                     } else {
-                        ss.showing = { state: 'pending', note: `starts in ${_fmtCountdown(playerFireIn)}` };
+                        ss.showing = { state: 'pending', note: `starts in ${_fmtCountdown(displayIn)}` };
                     }
 
-                    // 5) Done — only reached when remaining hits 0 (handled by reset above);
-                    //    shown as pending throughout the active lifecycle.
-                    ss.done = { state: 'pending', note: '' };
+                    // 5) Done — reached once t ≥ pt + dur.
+                    ss.done = done ? { state: 'done', note: '' } : { state: 'pending', note: '' };
 
                     // Panel accent + headline reflect the current phase.
                     let headline;
-                    if (showing) {
+                    if (done) {
+                        panel.style.borderColor = '#4ade80';
+                        headline = '✓ Done';
+                    } else if (showing) {
                         panel.style.borderColor = '#6366f1';
-                        headline = `▶ Showing — ${_fmtCountdown(remaining)} left`;
+                        headline = `▶ Showing — ${_fmtCountdown(endsIn)} left`;
                     } else if (prefetched) {
                         panel.style.borderColor = '#f59e0b';
-                        headline = `⏳ Preparing — display in ${_fmtCountdown(playerFireIn)}`;
+                        headline = `⏳ Preparing — display in ${_fmtCountdown(displayIn)}`;
                     } else {
                         panel.style.borderColor = '#166534';
-                        headline = `display in ${_fmtCountdown(playerFireIn)}`;
+                        headline = `display in ${_fmtCountdown(displayIn)}`;
                     }
 
                     renderStepper(ss, headline);
+
+                    // When done, render the final state briefly then reset so the panel
+                    // hides and is ready for the next break.
+                    if (done && !o._resetScheduled) {
+                        o._resetScheduled = true;
+                        setTimeout(() => {
+                            if (window._adOverlay === o) {
+                                window._adOverlay = null;
+                                document.getElementById('ad-break-panel').style.display = 'none';
+                            }
+                        }, 2000);
+                    }
                 } catch (_) {}
             }
-            if (window._adPollInterval) clearInterval(window._adPollInterval);
             if (window._adRenderInterval) clearInterval(window._adRenderInterval);
-            window._adEventState = null;
-            window._adPollInterval = setInterval(pollAdStatus, 1000);      // timing backbone
-            window._adRenderInterval = setInterval(renderAdPanel, 200);    // smooth countdown
-            pollAdStatus();
+            window._adOverlay = null;
+            window._adRenderInterval = setInterval(renderAdPanel, 200);    // media-clock tick
         }
 
         document.addEventListener('DOMContentLoaded', init);
