@@ -10,3 +10,6 @@
 [submodule "real-time-ad-gen"]
 	path = real-time-ad-gen
 	url = git@github.com:qualabs/real-time-ad-gen.git
+[submodule "stream-lens"]
+	path = stream-lens
+	url = git@github.com:qualabs/stream-lens.git

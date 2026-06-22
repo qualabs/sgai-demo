@@ -1,17 +1,19 @@
+include:
+  - path: ./real-time-ad-gen/docker-compose.yml
+    project_directory: ./real-time-ad-gen
+    env_file:
+      - ./real-time-ad-gen/.env
+
 volumes:
   morpheus_shm:
+  ollama_models:
 
 services:
   morpheus:
     build: ./morpheus
     ports:
       - "8080:80"
-    environment:
-      - AD_GEN_BASE_URL=${AD_GEN_BASE_URL:-}
-      - MORPHEUS_BANNER_QUERY=${MORPHEUS_BANNER_QUERY:-}
-      - MORPHEUS_SKYSCRAPER_QUERY=${MORPHEUS_SKYSCRAPER_QUERY:-}
-      - MORPHEUS_LSHAPE_RIGHT_QUERY=${MORPHEUS_LSHAPE_RIGHT_QUERY:-}
-      - MORPHEUS_LSHAPE_LEFT_QUERY=${MORPHEUS_LSHAPE_LEFT_QUERY:-}
+    env_file: .env
     volumes:
       - morpheus_shm:/dev/shm
     command: >
@@ -25,7 +27,6 @@ services:
       - "3000:3000"
     environment:
       NODE_ENV: development
-    # Copy vast-2-sgai/.env.example to vast-2-sgai/.env and fill in required values before first run
 
   dashjs:
     build:
@@ -41,13 +42,30 @@ services:
     ports:
       - "8082:80"
 
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+  stream-lens:
+    build: ./stream-lens
+    ports:
+      - "8001:8001"
+    env_file: .env
+    depends_on:
+      - ollama
+
   live-sim:
     build: ./live-sim
     ports:
       - "8000:8000"
-    env_file: ".env"
+    env_file: .env
     volumes:
       - ./live-sim/media:/media
     depends_on:
       - morpheus
       - vast-2-sgai
+      - stream-lens
+      - api

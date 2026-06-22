@@ -4,10 +4,11 @@ Live-Sim: DASH live streaming simulator with SCTE-35 event injection.
 
 Flow:
   FFmpeg (loops bbb_320x180.mp4) → segments + live.mpd (dynamic)
-  Patcher loop (every 2s): read live.mpd + add BaseURL + inject SCTE-35 → PUT to Morpheus
-  Morpheus (port 80): SCTE-35 → <ReplacePresentation> → serves patched MPD
-  GET /live.mpd: proxy from Morpheus → player
-  GET /segments/*: serve FFmpeg segments
+  Patcher loop (every 2s): read live.mpd + inject SCTE-35 → PUT to stream-lens → Morpheus
+  Segment pusher: stream new .m4s files → stream-lens → Morpheus (stored in /dev/shm)
+  Morpheus (port 80): SCTE-35 → <ReplacePresentation> → serves patched MPD + segments
+  GET /live.mpd: proxy from Morpheus (debug/dashboard use)
+  GET /segments/*: serve FFmpeg segments (debug/dashboard use)
   GET /api/list-mpd: SGAI endpoint → alternative content MPD
 """
 
@@ -44,7 +45,8 @@ OVERLAYS_DIR     = Path(__file__).parent / "overlays"
 
 MORPHEUS_URL     = config.get("MORPHEUS_URL", "http://morpheus")
 MORPHEUS_URL = f"{MORPHEUS_URL}/live.mpd"
-VAST2SGAI_URL    = config.get("VAST2SGAI_URL", "http://localhost:3000")
+VAST2SGAI_URL         = config.get("VAST2SGAI_URL", "http://localhost:3000")
+REAL_TIME_AD_GEN_URL  = config.get("REAL_TIME_AD_GEN_URL", "http://api:8000")
 SERVER_PORT      = config.get_int("SERVER_PORT", 8000)
 PATCH_INTERVAL   = config.get_int("PATCH_INTERVAL", 2)
 
@@ -52,9 +54,6 @@ PATCH_INTERVAL   = config.get_int("PATCH_INTERVAL", 2)
 # Shared output/encoding tail — identical for both the synthetic and the
 # file-backed source. Defined once so the two branches can't drift.
 OUTPUT_TAIL = [
-    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-    "-crf", "28", "-g", "60",
-    "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", "128k",
     "-f", "dash",
     "-streaming", "1",
@@ -68,55 +67,132 @@ OUTPUT_TAIL = [
 ]
 
 
-def build_ffmpeg_cmd() -> list[str]:
-    """Build the FFmpeg command based on the LIVE_SIM_VIDEO env var.
+def _parse_renditions(env_str: str) -> list[dict]:
+    result = []
+    for entry in env_str.split(","):
+        res, bitrate = entry.strip().split(":")
+        w, h = res.split("x")
+        result.append({"width": int(w), "height": int(h), "bitrate": bitrate})
+    return result
 
-    - If LIVE_SIM_VIDEO is set AND the file exists: loop that file infinitely,
-      use the file's own audio (optional, so it won't fail without an audio
-      track), and draw NO timecode overlay.
-    - Otherwise: fall back to a synthetic smptehdbars video + synthetic beep
-      audio + the LOCAL/UTC timecode drawtext overlay.
+_renditions: list[dict] = _parse_renditions(os.environ.get("LIVE_SIM_RENDITIONS", "1920x1080:4000k"))
+_num_video_renditions: int = len(_renditions)
+
+
+def _res_drawtext(r: dict) -> str:
+    """Resolution label burned into the top-right corner of a rendition."""
+    label = f"{r['width']}x{r['height']}"
+    return (
+        "drawtext="
+        "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
+        f"text='{label}':"
+        "fontcolor=white:fontsize=36:box=1:boxcolor=black@0.8:"
+        "x=w-text_w-10:y=10"
+    )
+
+
+def _build_filter_complex(renditions: list[dict], video_input: str = "0:v", synthetic: bool = False) -> str:
+    """Build a filter_complex string that splits one video input into N scaled renditions.
+
+    Each rendition gets its own scale + resolution label. Stream 0 in synthetic
+    mode also gets the realtime throttle + LOCAL/UTC timecode overlay.
     """
-    video = os.environ.get("LIVE_SIM_VIDEO")
-    if video and os.path.isfile(video):
-        return [
-            "ffmpeg",
-            "-stream_loop", "-1",
-            "-re",
-            "-i", video,
-            "-map", "0:v", "-map", "0:a?",   # video + file audio (optional)
-            *OUTPUT_TAIL,
+    n = len(renditions)
+
+    _timecode_drawtext = (
+        "drawtext="
+        "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
+        r"text='LOCAL\: %{localtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
+        "fontcolor=white:fontsize=80:box=1:boxcolor=black@0.8:"
+        "x=(w-text_w)/2:y=(h-text_h)/2-60,"
+        "drawtext="
+        "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
+        r"text='UTC\: %{gmtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
+        "fontcolor=yellow:fontsize=80:box=1:boxcolor=black@0.8:"
+        "x=(w-text_w)/2:y=(h-text_h)/2+60"
+    )
+
+    split_outs = "".join(f"[v{i}]" for i in range(n))
+    chains = [f"[{video_input}]split={n}{split_outs}"]
+
+    for i, r in enumerate(renditions):
+        filters = [f"scale={r['width']}:{r['height']}"]
+        if synthetic and i == 0:
+            filters += ["realtime", _timecode_drawtext]
+        filters.append(_res_drawtext(r))
+        chains.append(f"[v{i}]{''.join(f'{f}' if j == 0 else f',{f}' for j, f in enumerate(filters))}[out{i}]")
+
+    return ";".join(chains)
+
+
+def build_ffmpeg_cmd() -> list[str]:
+    """Build the FFmpeg command.
+
+    Uses filter_complex with an explicit split so each rendition gets its own
+    independent scale + overlay chain. This is required in FFmpeg 7 where
+    per-stream -vf specifiers do not reliably isolate scale filters.
+
+    - File mode: loops the file, uses its audio track.
+    - Synthetic mode: SMPTE bars + beep; stream0 gets timecode overlay.
+    Both modes burn the resolution label into every rendition.
+    """
+    n = len(_renditions)
+    video = _live_sim_video
+
+    per_stream: list[str] = []
+    for i, r in enumerate(_renditions):
+        per_stream += [
+            f"-c:v:{i}", "libx264",
+            f"-preset:v:{i}", "ultrafast",
+            f"-tune:v:{i}", "zerolatency",
+            f"-b:v:{i}", r["bitrate"],
+            f"-g:v:{i}", "60",
+            f"-pix_fmt:v:{i}", "yuv420p",
         ]
 
-    return [
+    video_maps = []
+    for i in range(n):
+        video_maps += ["-map", f"[out{i}]"]
+
+    # Group all video streams into one AdaptationSet so dash.js sees them as
+    # quality levels it can switch between, not separate tracks.
+    video_streams = ",".join(str(i) for i in range(n))
+    adaptation_sets = f"id=0,streams={video_streams} id=1,streams={n}"
+    output_tail = OUTPUT_TAIL[:-1] + ["-adaptation_sets", adaptation_sets, OUTPUT_TAIL[-1]]
+
+    if video and os.path.isfile(video):
+        source = ["ffmpeg", "-stream_loop", "-1", "-re", "-i", video]
+        fc = _build_filter_complex(_renditions, video_input="0:v", synthetic=False)
+        return source + ["-filter_complex", fc] + video_maps + ["-map", "0:a?"] + per_stream + output_tail
+
+    # Synthetic path — SMPTE bars + beep audio
+    source = [
         "ffmpeg",
         "-re",
         "-f", "lavfi", "-i", "smptehdbars=size=1920x1080:rate=30",
         "-f", "lavfi", "-i", "aevalsrc=exprs='if(lt(mod(t\\,1)\\,0.08)\\,sin(2*PI*1000*t)\\,0)|if(lt(mod(t\\,1)\\,0.08)\\,sin(2*PI*1000*t)\\,0):sample_rate=48000",
-        "-map", "0:v", "-map", "1:a",
-        "-vf", (
-            "realtime,"
-            "drawtext="
-            "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
-            r"text='LOCAL\: %{localtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
-            "fontcolor=white:fontsize=80:box=1:boxcolor=black@0.8:"
-            "x=(w-text_w)/2:y=(h-text_h)/2-60,"
-            "drawtext="
-            "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Mono.ttf:"
-            r"text='UTC\: %{gmtime\:%T}.%{eif\:mod(t\,1)*1000\:d\:3}':"
-            "fontcolor=yellow:fontsize=80:box=1:boxcolor=black@0.8:"
-            "x=(w-text_w)/2:y=(h-text_h)/2+60"
-        ),
-        *OUTPUT_TAIL,
     ]
+    fc = _build_filter_complex(_renditions, video_input="0:v", synthetic=True)
+    return source + ["-filter_complex", fc] + video_maps + ["-map", "1:a"] + per_stream + output_tail
 
 # ── State ─────────────────────────────────────────────────────────────────────
+
+# Runtime-configurable source video. None → synthetic SMPTE-bars source.
+# Updated via POST /api/config without restarting the container.
+_live_sim_video: str | None = os.environ.get("LIVE_SIM_VIDEO") or None
 
 ffmpeg_proc:    asyncio.subprocess.Process | None = None
 ffmpeg_start:   datetime | None = None   # UTC time FFmpeg was launched
 pending_events: list[dict]               = []    # active SCTE-35 events
 event_counter:  int                      = 0     # local event id counter
 ffmpeg_log:     collections.deque        = collections.deque(maxlen=200)
+
+OUTPUT_URL       = config.get("OUTPUT_URL", "http://morpheus")
+MPD_PUSH_URL     = f"{OUTPUT_URL}/live.mpd"
+SEGMENT_PUSH_URL = f"{OUTPUT_URL}/segment"
+
+_pushed_init:     dict[int, bool] = {}
+_pushed_segments: set[str]        = set()
 
 # ── Namespace helpers ─────────────────────────────────────────────────────────
 
@@ -202,19 +278,13 @@ def patch_mpd(raw_xml: str, active_events: list[dict]) -> str:
     if period is None:
         raise ValueError("No <Period> found in MPD")
 
-    # Add BaseURL so the player can fetch segments from us. Relative so the
-    # player resolves it against the manifest's own host — works whether the
-    # manifest is loaded via localhost or a LAN IP. (Requires the player to
-    # load the manifest directly from live-sim; segments are served here.)
-    base_url_el = ET.Element(_ns("BaseURL"))
-    base_url_el.text = "segments/"
-    period.insert(0, base_url_el)
+    # No BaseURL — segments are served directly from morpheus. The player
+    # resolves segment URLs relative to the manifest URL (morpheus root).
 
     # Inject SCTE-35 EventStream before AdaptationSets
     if active_events:
         scte_es = build_scte35_event_stream(active_events)
-        # Insert after BaseURL (index 1)
-        period.insert(1, scte_es)
+        period.insert(0, scte_es)
 
     ET.indent(root, space="\t")
     xml_str = ET.tostring(root, encoding="unicode", xml_declaration=True)
@@ -250,7 +320,7 @@ async def patcher_loop():
                         PATCHED_MPD_PATH.write_text(patched, encoding="utf-8")
 
                         async with session.put(
-                            MORPHEUS_URL,
+                            MPD_PUSH_URL,
                             data=patched.encode("utf-8"),
                             headers={"Content-Type": "application/dash+xml"},
                         ) as resp:
@@ -262,6 +332,82 @@ async def patcher_loop():
                                 logger.info("[patcher] PUT OK%s", event_info)
             except Exception as exc:
                 logger.error("[patcher] error: %s", exc)
+
+            await asyncio.sleep(PATCH_INTERVAL)
+
+
+async def _push_segment(
+    session: ClientSession,
+    url: str,
+    data: bytes,
+    seg_type: str,
+    stream_type: str,
+    seg_num: int | None,
+    seg_name: str | None = None,
+) -> int:
+    headers = {
+        "Content-Type": "application/octet-stream",
+        "X-Segment-Type": seg_type,
+        "X-Stream-Type": stream_type,
+    }
+    if seg_num is not None:
+        headers["X-Segment-Number"] = str(seg_num)
+    if seg_name is not None:
+        headers["X-Segment-Name"] = seg_name
+    try:
+        async with session.put(url, data=data, headers=headers) as resp:
+            if resp.status not in (200, 201, 204):
+                logger.debug("[pusher] PUT %s %s → %s", seg_type, stream_type, resp.status)
+            return resp.status
+    except Exception as exc:
+        logger.debug("[pusher] PUT failed: %s", exc)
+        return 0
+
+
+async def segment_pusher_loop():
+    """Background task: forward new DASH segments to stream-lens."""
+    global _pushed_init, _pushed_segments
+
+    segment_url = SEGMENT_PUSH_URL
+
+    async with ClientSession(timeout=ClientTimeout(total=10)) as session:
+        while True:
+            try:
+                if ffmpeg_proc is not None and ffmpeg_proc.returncode is None:
+                    # Push init segments once per stream
+                    for stream_id in range(_num_video_renditions + 1):
+                        if not _pushed_init.get(stream_id, False):
+                            stream_type = "video" if stream_id < _num_video_renditions else "audio"
+                            p = SEGMENTS_DIR / f"init-stream{stream_id}.m4s"
+                            if p.exists():
+                                await _push_segment(
+                                    session, segment_url, p.read_bytes(),
+                                    "init", stream_type, None, f"init-stream{stream_id}.m4s"
+                                )
+                                _pushed_init[stream_id] = True
+
+                    # Push new media segments
+                    for seg_file in sorted(SEGMENTS_DIR.glob("chunk-stream*.m4s")):
+                        if seg_file.name not in _pushed_segments:
+                            m = re.match(r"chunk-stream(\d+)-(\d+)\.m4s", seg_file.name)
+                            if m:
+                                stream_type = "video" if int(m.group(1)) < _num_video_renditions else "audio"
+                                seg_num = int(m.group(2))
+                                status = await _push_segment(session, segment_url, seg_file.read_bytes(), "media", stream_type, seg_num, seg_file.name)
+                                if status == 409:
+                                    # stream-lens restarted and lost init state — re-push next iteration
+                                    logger.info("[pusher] stream-lens lost state (409), resetting push flags")
+                                    _pushed_init = {}
+                                    _pushed_segments.clear()
+                                    break
+                                _pushed_segments.add(seg_file.name)
+                else:
+                    # Reset when stream stops
+                    _pushed_init = {}
+                    _pushed_segments.clear()
+
+            except Exception as exc:
+                logger.debug("[pusher] error: %s", exc)
 
             await asyncio.sleep(PATCH_INTERVAL)
 
@@ -285,16 +431,17 @@ async def handle_index(request: web.Request) -> web.Response:
 
 
 async def handle_live_mpd(request: web.Request) -> web.Response:
-    """Proxy GET /live.mpd → Morpheus → player."""
+    """Proxy GET /live.mpd → Morpheus → player, replacing URL placeholders for overlay events."""
     try:
         async with ClientSession(timeout=ClientTimeout(total=5)) as session:
             async with session.get(MORPHEUS_URL) as resp:
                 body = await resp.read()
-                return web.Response(
-                    body=body,
-                    content_type="application/dash+xml",
-                    headers=CORS_HEADERS,
-                )
+
+        return web.Response(
+            body=body,
+            content_type="application/dash+xml",
+            headers=CORS_HEADERS,
+        )
     except Exception as exc:
         return web.Response(
             status=502,
@@ -330,6 +477,7 @@ async def handle_segment(request: web.Request) -> web.Response:
 
 async def handle_start(request: web.Request) -> web.Response:
     global ffmpeg_proc, ffmpeg_start, pending_events, event_counter
+    global _pushed_init, _pushed_segments
 
     if ffmpeg_proc is not None and ffmpeg_proc.returncode is None:
         return web.json_response({"ok": False, "msg": "FFmpeg already running"}, headers=CORS_HEADERS)
@@ -340,9 +488,8 @@ async def handle_start(request: web.Request) -> web.Response:
     if MPD_PATH.exists():
         MPD_PATH.unlink()
 
-    video = os.environ.get("LIVE_SIM_VIDEO")
-    used_file = bool(video and os.path.isfile(video))
-    logger.info("[ffmpeg] source=%s", video if used_file else "synthetic smptehdbars")
+    used_file = bool(_live_sim_video and os.path.isfile(_live_sim_video))
+    logger.info("[ffmpeg] source=%s", _live_sim_video if used_file else "synthetic smptehdbars")
 
     cmd = build_ffmpeg_cmd()
     ffmpeg_proc = await asyncio.create_subprocess_exec(
@@ -354,6 +501,8 @@ async def handle_start(request: web.Request) -> web.Response:
     pending_events = []
     event_counter  = 0
     ffmpeg_log.clear()
+    _pushed_init = {}
+    _pushed_segments.clear()
     asyncio.ensure_future(_read_stderr(ffmpeg_proc))
 
     logger.info("[ffmpeg] started pid=%s", ffmpeg_proc.pid)
@@ -472,10 +621,9 @@ async def handle_inject_overlay(request: web.Request) -> web.Response:
         )
 
     body = await request.json()
-    shape      = body.get("shape", "banner")
-    delay_s    = float(body.get("delay_s", 10))
-    duration_s = float(body.get("duration_s", 20))
-
+    shape        = body.get("shape", "banner")
+    delay_s      = float(body.get("delay_s", 10))
+    duration_s   = float(body.get("duration_s", 20))
     if shape not in _VALID_SHAPES:
         return web.json_response(
             {"ok": False, "msg": f"Invalid shape. Must be one of: {', '.join(sorted(_VALID_SHAPES))}"},
@@ -555,6 +703,28 @@ async def handle_list_mpd(request: web.Request) -> web.Response:
     )
 
 
+
+async def handle_config(request: web.Request) -> web.Response:
+    """Update live-sim runtime config without restarting the container.
+
+    Accepted fields:
+      LIVE_SIM_VIDEO: str | null  — path to the source video file, or null for
+                                    the synthetic SMPTE-bars source.
+
+    Does NOT stop or restart FFmpeg; the caller must do that around this call.
+    Changes take effect on the next POST /api/start.
+    """
+    global _live_sim_video
+    body = await request.json()
+    if "LIVE_SIM_VIDEO" in body:
+        val = body["LIVE_SIM_VIDEO"]
+        _live_sim_video = str(val) if val else None
+    return web.json_response(
+        {"ok": True, "config": {"LIVE_SIM_VIDEO": _live_sim_video}},
+        headers=CORS_HEADERS,
+    )
+
+
 async def handle_hello(_request: web.Request) -> web.Response:
     return web.Response(text="goodbye", headers=CORS_HEADERS)
 
@@ -567,12 +737,17 @@ async def handle_options(request: web.Request) -> web.Response:
 
 async def on_startup(app: web.Application):
     app["patcher"] = asyncio.create_task(patcher_loop())
+    if OUTPUT_URL:
+        app["pusher"] = asyncio.create_task(segment_pusher_loop())
     logger.info("[server] listening on http://localhost:%s", SERVER_PORT)
     logger.info("[server] player manifest: http://localhost:%s/live.mpd", SERVER_PORT)
+    logger.info("[server] output: %s (mpd → %s, segments → %s)", OUTPUT_URL, MPD_PUSH_URL, SEGMENT_PUSH_URL)
 
 
 async def on_cleanup(app: web.Application):
     app["patcher"].cancel()
+    if "pusher" in app:
+        app["pusher"].cancel()
     if ffmpeg_proc is not None and ffmpeg_proc.returncode is None:
         ffmpeg_proc.send_signal(signal.SIGTERM)
 
@@ -588,6 +763,7 @@ def make_app() -> web.Application:
     app.router.add_get("/segments/{filename}", handle_segment)
     app.router.add_post("/api/start",    handle_start)
     app.router.add_post("/api/stop",     handle_stop)
+    app.router.add_post("/api/config",   handle_config)
     app.router.add_get("/api/status",    handle_status)
     app.router.add_get("/api/logs",      handle_logs)
     app.router.add_post("/api/inject",         handle_inject)

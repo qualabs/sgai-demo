@@ -54,6 +54,7 @@ sequenceDiagram
 | 3003 | `dashjs` | dash.js webpack dev server — serves compiled player + assets |
 | 8080 | `morpheus` | MPEG-DASH manifest server with SCTE-35 → SGAI conversion |
 | 8000 | `live-sim` | Live stream simulator — FFmpeg + SCTE-35 injector + ListMPD proxy |
+| 8001 | `stream-lens` | AI context analyzer — buffers DASH segments, runs video+audio analysis, fuses into KV context string |
 | 3000 | `vast-2-sgai` | VAST-to-SGAI adapter — converts VAST XML into DASH ListMPDs |
 | 8888 | `api` (real-time-ad-gen) | Real-time AI ad generator — generates overlay images via Gemini |
 | 3002 | `ui` (real-time-ad-gen) | Template manager UI for the ad generator |
@@ -61,6 +62,9 @@ sequenceDiagram
 
 ### `morpheus` — MPEG-DASH server ([qualabs/morpheus](https://github.com/qualabs/morpheus), branch: `feat/scte-to-overlay`)
 Custom Nginx module that converts SCTE-35 markers in the incoming MPD into `<ReplacePresentation>` and `<OverlayEvent>` SGAI events and serves the patched manifest to the player.
+
+### `stream-lens` — AI context analyzer ([qualabs/stream-lens](https://github.com/qualabs/stream-lens))
+FastAPI service sitting between `live-sim` and `morpheus`. Receives DASH segments from all renditions, buffers the selected rendition, runs parallel video (Gemma 4 via Google AI) and audio (Whisper + librosa) analysis, fuses results into a KV context string (e.g. `ctx_activity=surfing&ctx_mood=energetic`), and forwards all segments and the MPD to morpheus.
 
 ### `live-sim` — live stream simulator
 Python/aiohttp service that runs FFmpeg to generate a live DASH stream, injects SCTE-35 events on demand, and proxies the vast-2-sgai ListMPD endpoint with a timing patch (see [Known caveats](#known-caveats)).
@@ -223,6 +227,7 @@ The submodules are pinned to specific commits that are known to work with this d
 | `morpheus` | `ff0cb483b8a34d0b5ea601c7f6b4b580c7213bfb` |
 | `vast-2-sgai` | `0964dcfb3aa74ad0a8631316decc76ac3c6e6449` |
 | `real-time-ad-gen` | `be96f5fcc21f61af867ba6dbfb40f1fe40d0d077` |
+| `stream-lens` | `29a49d2f8f4f78d4b13f731f2bb5b2b69914a18c` |
 
 If you update a submodule and the demo breaks, reset it to the pinned commit:
 

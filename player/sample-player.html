@@ -63,6 +63,131 @@
         details[open] > summary::before {
             content: '▼ ';
         }
+
+        #context-panel {
+            width: 340px;
+            flex-shrink: 0;
+            background: #0f172a;
+            border: 1px solid #1e293b;
+            border-radius: 8px;
+            padding: 0.85rem 1rem;
+            font-family: monospace;
+            font-size: 0.72rem;
+            color: #e2e8f0;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        #context-panel .ctx-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #context-panel .ctx-title {
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #94a3b8;
+        }
+
+        #context-panel .ctx-clip-info {
+            color: #475569;
+            font-size: 0.68rem;
+            line-height: 1.6;
+        }
+
+        #context-panel .ctx-status-box {
+            font-size: 0.68rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        #context-panel .ctx-status-box.state-waiting    { background:#1e293b; color:#64748b; }
+        #context-panel .ctx-status-box.state-processing { background:#422006; color:#fbbf24; }
+        #context-panel .ctx-status-box.state-ready      { background:#052e16; color:#4ade80; }
+        #context-panel .ctx-status-box.state-error      { background:#450a0a; color:#f87171; }
+        #context-panel .ctx-status-box.state-offline    { background:#1e293b; color:#94a3b8; }
+
+        @keyframes ctx-pulse {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: 0.4; }
+        }
+        #context-panel .ctx-status-box.state-processing {
+            animation: ctx-pulse 1.4s ease-in-out infinite;
+        }
+
+        #context-panel .ctx-body {
+            flex: 1;
+            overflow-y: auto;
+            max-height: 420px;
+            line-height: 1.55;
+            color: #e2e8f0;
+        }
+
+        #context-panel .ctx-field { margin-bottom: 0.5rem; }
+        #context-panel .ctx-label {
+            font-size: 0.62rem;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: #64748b;
+            margin-bottom: 0.15rem;
+        }
+        #context-panel .ctx-value { color: #e2e8f0; }
+
+        #context-panel .ctx-mood-tag {
+            display: inline-block;
+            padding: 0.15rem 0.45rem;
+            border-radius: 4px;
+            background: #1e3a5f;
+            color: #93c5fd;
+            font-size: 0.7rem;
+        }
+
+        #context-panel .ctx-palette {
+            display: flex;
+            gap: 0.3rem;
+            flex-wrap: wrap;
+        }
+        #context-panel .ctx-swatch {
+            display: inline-block;
+            padding: 0.12rem 0.4rem;
+            border-radius: 4px;
+            background: #1e293b;
+            color: #94a3b8;
+            border: 1px solid #334155;
+            font-size: 0.68rem;
+        }
+
+        #context-panel .ctx-cues { list-style: none; padding: 0; margin: 0; }
+        #context-panel .ctx-cues li::before { content: '› '; color: #475569; }
+
+        #context-panel .ctx-temporal {
+            color: #94a3b8;
+            font-style: italic;
+            font-size: 0.68rem;
+        }
+
+        #context-panel .ctx-fallback { white-space: pre-wrap; }
+
+        #context-panel .ctx-toggle {
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 0.07em;
+            padding: 0.12rem 0.5rem;
+            border-radius: 3px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            font-family: monospace;
+            line-height: 1.4;
+        }
+        #context-panel .ctx-toggle-on  { background:#052e16; color:#4ade80; border-color:#166534; }
+        #context-panel .ctx-toggle-off { background:#1e293b; color:#64748b; border-color:#334155; }
     </style>
 </head>
 
@@ -89,13 +214,45 @@
                 <div class="mt-1 text-muted" id="url-preview" style="font-size:0.72rem; word-break:break-all; font-family:monospace;"></div>
             </div>
 
-            <div class="dash-video-player mb-1">
-                <div class="videoContainer" id="videoContainer">
-                    <video id="video-element" controls="true"></video>
-                    <video id="alternative-video-element" controls="true"></video>
-                    <div id="overlay"></div>
+            <div class="d-flex gap-3 align-items-start">
+
+                <div class="flex-grow-1 min-w-0">
+                    <div class="dash-video-player mb-1">
+                        <div class="videoContainer" id="videoContainer">
+                            <video id="video-element" controls="true"></video>
+                            <video id="alternative-video-element" controls="true"></video>
+                            <div id="overlay"></div>
+                        </div>
+                    </div>
+
+                    <div id="latency-stats" style="display:none; margin-top:0.5rem; font-size:0.8rem; color:#6c757d; font-family:monospace; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                        <span>Live latency: <span id="stat-latency">—</span>s</span>
+                        <span style="color:#dee2e6">|</span>
+                        <span>Target: <span id="stat-target">—</span>s</span>
+                        <span style="color:#dee2e6">|</span>
+                        <span>Buffer: <span id="stat-buffer">—</span>s</span>
+                        <span style="color:#dee2e6">|</span>
+                        <span>Quality:
+                            <select id="quality-select" onchange="onQualitySelectChange()"
+                                style="font-size:0.75rem; font-family:monospace; border:1px solid #dee2e6; border-radius:3px; padding:0 4px; color:#6c757d; background:#fff;">
+                                <option value="auto">Auto (ABR)</option>
+                            </select>
+                        </span>
+                    </div>
+                    <div id="ad-break-panel" style="display:none; margin-top:0.5rem; padding:0.5rem 0.75rem; border-radius:6px; font-size:0.82rem; font-family:monospace;">
+                        <span id="ad-break-text"></span>
+                    </div>
                 </div>
-            </div>
+
+                <div id="context-panel">
+                    <div class="ctx-header">
+                        <span class="ctx-title">Context Analyzer</span>
+                        <button id="ctx-toggle-btn" class="ctx-toggle ctx-toggle-on" onclick="toggleContextProcessing()">ON</button>
+                    </div>
+                    <div id="ctx-clip-info" class="ctx-clip-info">—</div>
+                    <div id="ctx-status-box" class="ctx-status-box">—</div>
+                    <div id="ctx-body" class="ctx-body">—</div>
+                </div>
 
             <div id="latency-stats" style="display:none; margin-top:0.5rem; font-size:0.8rem; color:#6c757d; font-family:monospace;">
                 Live latency: <span id="stat-latency">—</span>s
@@ -281,7 +438,7 @@
         }
 
         function init() {
-            document.getElementById('manifestUrl').value = 'http://' + SVC_HOST + ':8000/live.mpd';
+            document.getElementById('manifestUrl').value = 'http://' + SVC_HOST + ':8080/live.mpd';
             document.getElementById('dashLogo').src = 'http://' + SVC_HOST + ':3003/samples/lib/img/dashjs-logo.png';
             document.getElementById('loadPlayer').addEventListener('click', loadPlayer);
             document.getElementById('manifestUrl').addEventListener('input', buildMpdUrl);
@@ -343,6 +500,12 @@
 
             player.off(dashjs.MediaPlayer.events.METRIC_ADDED, onMetricAdded);
             player.on(dashjs.MediaPlayer.events.METRIC_ADDED, onMetricAdded);
+
+            // Reset and populate quality selector once the stream is ready
+            const qualSel = document.getElementById('quality-select');
+            if (qualSel) qualSel.innerHTML = '<option value="auto">Auto (ABR)</option>';
+            player.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, populateQualitySelector);
+
             clearNetworkLog();
 
             // ── Real dash.js overlay-lifecycle events ───────────────────────────
@@ -449,7 +612,7 @@
             window._adOverlayObserver.observe(overlay, { childList: true, subtree: true });
 
             // Latency stats
-            document.getElementById('latency-stats').style.display = 'block';
+            document.getElementById('latency-stats').style.display = 'flex';
             if (window._latencyInterval) clearInterval(window._latencyInterval);
             window._latencyInterval = setInterval(() => {
                 try {
@@ -638,7 +801,138 @@
             window._adRenderInterval = setInterval(renderAdPanel, 200);    // media-clock tick
         }
 
+        // ── Quality selector ──────────────────────────────────────────────────
+
+        function populateQualitySelector() {
+            if (!player) return;
+            const sel = document.getElementById('quality-select');
+            if (!sel) return;
+            const reps = player.getRepresentationsByType('video');
+            if (!reps || !reps.length) return;
+            sel.innerHTML = '<option value="auto">Auto (ABR)</option>';
+            reps.forEach(r => {
+                const opt = document.createElement('option');
+                opt.value = r.index;
+                opt.textContent = `${r.width}×${r.height} @ ${Math.round(r.bandwidth / 1000)}k`;
+                sel.appendChild(opt);
+            });
+        }
+
+        function onQualitySelectChange() {
+            if (!player) return;
+            const sel = document.getElementById('quality-select');
+            if (!sel) return;
+            if (sel.value === 'auto') {
+                player.updateSettings({ streaming: { abr: { autoSwitchBitrate: { video: true } } } });
+            } else {
+                player.updateSettings({ streaming: { abr: { autoSwitchBitrate: { video: false } } } });
+                player.setRepresentationForTypeByIndex('video', parseInt(sel.value, 10));
+            }
+        }
+
+        // ── Context Analyzer panel ─────────────────────────────────────────────
+
+        let _ctxProcessingEnabled = true;
+
+        async function toggleContextProcessing() {
+            const newState = !_ctxProcessingEnabled;
+            try {
+                const r = await fetch('http://' + SVC_HOST + ':8001/processing', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: newState }),
+                });
+                if (r.ok) {
+                    _ctxProcessingEnabled = newState;
+                    _updateCtxToggleBtn();
+                }
+            } catch (e) {
+                console.error('[ctx-toggle] failed:', e);
+            }
+        }
+
+        function _updateCtxToggleBtn() {
+            const btn = document.getElementById('ctx-toggle-btn');
+            if (!btn) return;
+            btn.textContent = _ctxProcessingEnabled ? 'ON' : 'OFF';
+            btn.className = 'ctx-toggle ' + (_ctxProcessingEnabled ? 'ctx-toggle-on' : 'ctx-toggle-off');
+        }
+
+        function _fmtIso(iso) {
+            if (!iso) return '—';
+            return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+
+        function _esc(str) {
+            return String(str)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        function _renderKvContext(kvStr) {
+            if (!kvStr || typeof kvStr !== 'string')
+                return '<span style="color:#475569">—</span>';
+
+            const pairs = kvStr.split('&').filter(p => p.includes('='));
+            if (!pairs.length)
+                return `<span class="ctx-fallback">${_esc(kvStr)}</span>`;
+
+            const field = (label, html) =>
+                `<div class="ctx-field"><div class="ctx-label">${label}</div><div class="ctx-value">${html}</div></div>`;
+
+            return pairs.map(pair => {
+                const eqIdx = pair.indexOf('=');
+                const key   = pair.slice(0, eqIdx).trim().replace(/^ctx_/, '').replace(/_/g, ' ');
+                const val   = decodeURIComponent(pair.slice(eqIdx + 1).replace(/\+/g, ' '));
+                return field(key, `<span class="ctx-mood-tag">${_esc(val)}</span>`);
+            }).join('');
+        }
+
+        function updateContextPanel(ctx) {
+            const statusEl = document.getElementById('ctx-status-box');
+            const clipEl   = document.getElementById('ctx-clip-info');
+            const bodyEl   = document.getElementById('ctx-body');
+
+            const state = ctx.status || 'waiting';
+            statusEl.className = 'ctx-status-box state-' + state;
+            statusEl.textContent = state;
+
+            const clipParts = [];
+            if (ctx.clip_start) clipParts.push('clip: ' + _fmtIso(ctx.clip_start) + ' → ' + _fmtIso(ctx.clip_end));
+            if (ctx.processed_at) clipParts.push('analyzed: ' + _fmtIso(ctx.processed_at));
+            clipEl.textContent = clipParts.join('  ·  ') || '—';
+
+            if (ctx.context == null) return;
+            bodyEl.innerHTML = _renderKvContext(String(ctx.context));
+        }
+
+        function startContextPolling() {
+            if (window._ctxPollInterval) clearInterval(window._ctxPollInterval);
+            async function poll() {
+                try {
+                    const r = await fetch('http://' + SVC_HOST + ':8001/context');
+                    const j = await r.json();
+                    if (!r.ok) {
+                        const statusEl = document.getElementById('ctx-status-box');
+                        const bodyEl   = document.getElementById('ctx-body');
+                        statusEl.className = 'ctx-status-box state-error';
+                        statusEl.textContent = 'error ' + r.status;
+                        bodyEl.innerHTML = `<span style="color:#f87171">${_esc(j.error || String(r.status))}</span>`;
+                        return;
+                    }
+                    updateContextPanel(j);
+                } catch (_) {
+                    const statusEl = document.getElementById('ctx-status-box');
+                    statusEl.className = 'ctx-status-box state-offline';
+                    statusEl.textContent = 'offline';
+                }
+            }
+            poll();
+            window._ctxPollInterval = setInterval(poll, 3000);
+        }
+
         document.addEventListener('DOMContentLoaded', init);
+        document.addEventListener('DOMContentLoaded', startContextPolling);
 
         function highlightXml(text) {
             const esc = text

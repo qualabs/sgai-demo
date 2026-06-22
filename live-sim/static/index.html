@@ -193,6 +193,169 @@
     #toast.show { opacity: 1; transform: translateY(0); }
     #toast.error { background: #ef4444; color: #fff; }
 
+    /* Overlay subsection */
+    .subsection {
+      margin-top: 0.9rem;
+      background: #161926;
+      border: 1px solid #2d3148;
+      border-left: 3px solid #6366f1;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .subsection-title {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #818cf8;
+      padding: 0.5rem 0.9rem;
+      background: #1a1d2e;
+      border-bottom: 1px solid #2d3148;
+    }
+
+    .subsection-body {
+      padding: 0.9rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    /* Query params */
+    .qp-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.35rem;
+    }
+
+    .qp-label {
+      font-size: 0.8rem;
+      color: #94a3b8;
+    }
+
+    .btn-add {
+      padding: 0.2rem 0.55rem;
+      font-size: 0.72rem;
+      font-weight: 500;
+      background: #252840;
+      color: #818cf8;
+      border-radius: 5px;
+      border: 1px solid #3d4270;
+      transition: background 0.15s;
+    }
+    .btn-add:hover:not(:disabled) { background: #2e3354; }
+
+    .qp-row {
+      display: flex;
+      gap: 0.35rem;
+      align-items: center;
+      margin-bottom: 0.3rem;
+    }
+    .qp-row input {
+      background: #0f1117;
+      border: 1px solid #2d3148;
+      border-radius: 5px;
+      color: #e2e8f0;
+      padding: 0.3rem 0.55rem;
+      font-size: 0.82rem;
+    }
+    .qp-row input:focus {
+      outline: none;
+      border-color: #6366f1;
+    }
+    .qp-row .qp-key { flex: 1; }
+    .qp-row .qp-val { flex: 2; }
+
+    .btn-remove {
+      padding: 0.2rem 0.45rem;
+      font-size: 0.72rem;
+      font-weight: 500;
+      background: #2d1b1b;
+      color: #f87171;
+      border-radius: 5px;
+      border: 1px solid #4d2626;
+      flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    .btn-remove:hover:not(:disabled) { background: #3d2222; }
+
+    /* Checkbox */
+    .checkbox-label {
+      flex-direction: row !important;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: pointer;
+      font-size: 0.82rem;
+      color: #94a3b8;
+      user-select: none;
+    }
+    input[type="checkbox"] {
+      width: 15px;
+      height: 15px;
+      accent-color: #6366f1;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    /* Segmented control */
+    .seg-control {
+      display: flex;
+      background: #0f1117;
+      border: 1px solid #2d3148;
+      border-radius: 7px;
+      padding: 3px;
+      gap: 3px;
+      margin-bottom: 0.9rem;
+    }
+    .seg-btn {
+      flex: 1;
+      padding: 0.35rem 0;
+      font-size: 0.78rem;
+      font-weight: 500;
+      border-radius: 5px;
+      background: transparent;
+      color: #64748b;
+      border: none;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .seg-btn.active { background: #6366f1; color: #fff; }
+
+    /* Field hint */
+    .field-hint {
+      font-size: 0.72rem;
+      color: #475569;
+      margin-top: 0.15rem;
+    }
+
+    /* Generations list */
+    .gen-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .gen-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      background: #0f1117;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      padding: 0.45rem 0.6rem;
+      cursor: pointer;
+      transition: border-color 0.15s;
+      font-size: 0.8rem;
+    }
+    .gen-item:hover   { border-color: #4f5286; }
+    .gen-item.selected { border-color: #6366f1; background: #1a1d2e; }
+    .gen-item input[type="radio"] { margin-top: 2px; flex-shrink: 0; accent-color: #6366f1; }
+    .gen-name   { color: #c7d2fe; font-weight: 500; }
+    .gen-params { color: #64748b; font-size: 0.75rem; margin-top: 0.15rem; }
+    .gen-empty  { font-size: 0.8rem; color: #374151; text-align: center; padding: 0.75rem 0; }
+
     /* FFmpeg log */
     #ffmpeg-log {
       margin-top: 1rem;
@@ -266,6 +429,7 @@
       <input type="number" id="overlay-duration" value="20" min="5" step="1" />
     </label>
   </div>
+
   <button class="btn-inject" id="btn-inject-overlay" onclick="injectOverlay()" disabled>
     Inject Overlay Event
   </button>
@@ -352,6 +516,7 @@
     const shape      = document.getElementById('overlay-shape').value;
     const delay_s    = parseFloat(document.getElementById('overlay-delay').value);
     const duration_s = parseFloat(document.getElementById('overlay-duration').value);
+
     const r = await fetch(`${BASE}/api/inject-overlay`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
