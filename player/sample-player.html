@@ -239,8 +239,14 @@
                             </select>
                         </span>
                     </div>
-                    <div id="ad-break-panel" style="display:none; margin-top:0.5rem; padding:0.5rem 0.75rem; border-radius:6px; font-size:0.82rem; font-family:monospace;">
-                        <span id="ad-break-text"></span>
+                    <div id="ad-break-panel" style="display:none; margin-top:0.5rem; padding:0.6rem 0.8rem; border-radius:8px; font-size:0.8rem; font-family:'SF Mono',Menlo,Consolas,monospace; background:#13131f; border:1px solid #2a2a40; color:#cbd5e1;">
+                        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.45rem;">
+                            <span id="ad-stepper-title" style="font-weight:700; letter-spacing:0.04em; text-transform:uppercase; font-size:0.7rem; color:#94a3b8;">AD Overlay Lifecycle</span>
+                            <span id="ad-stepper-headline" style="font-size:0.74rem; color:#a5b4fc;"></span>
+                        </div>
+                        <div id="ad-stepper-steps" style="display:flex; flex-direction:column; gap:0.18rem;">
+                            <!-- rows injected by JS; ids: step-detected / step-prefetch / step-loaded / step-showing / step-done -->
+                        </div>
                     </div>
                 </div>
 
@@ -254,22 +260,6 @@
                     <div id="ctx-body" class="ctx-body">—</div>
                 </div>
 
-            <div id="latency-stats" style="display:none; margin-top:0.5rem; font-size:0.8rem; color:#6c757d; font-family:monospace;">
-                Live latency: <span id="stat-latency">—</span>s
-                &nbsp;|&nbsp; Target: <span id="stat-target">—</span>s
-                &nbsp;|&nbsp; Buffer: <span id="stat-buffer">—</span>s
-            </div>
-            <!-- Ad-break lifecycle stepper. Each row is one stage; the icon shows
-                 pending (◌) / active (▶) / done (✓), the label names the stage and the
-                 right-hand cell shows a live countdown to the next transition. -->
-            <div id="ad-break-panel" style="display:none; margin-top:0.5rem; padding:0.6rem 0.8rem; border-radius:8px; font-size:0.8rem; font-family:'SF Mono',Menlo,Consolas,monospace; background:#13131f; border:1px solid #2a2a40; color:#cbd5e1;">
-                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.45rem;">
-                    <span id="ad-stepper-title" style="font-weight:700; letter-spacing:0.04em; text-transform:uppercase; font-size:0.7rem; color:#94a3b8;">AD Overlay Lifecycle</span>
-                    <span id="ad-stepper-headline" style="font-size:0.74rem; color:#a5b4fc;"></span>
-                </div>
-                <div id="ad-stepper-steps" style="display:flex; flex-direction:column; gap:0.18rem;">
-                    <!-- rows injected by JS; ids: step-detected / step-prefetch / step-loaded / step-showing / step-done -->
-                </div>
             </div>
 
             <details id="section-network" class="mt-4">
@@ -321,7 +311,7 @@
                     word-break:break-all;
                 ">Load a player to see the manifest…</pre>
             </details>
-        </div>
+        </div><!-- /container -->
     </main>
 
     <script class="code">
