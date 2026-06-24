@@ -43,8 +43,6 @@ MPD_PATH         = SEGMENTS_DIR / "live.mpd"
 PATCHED_MPD_PATH = SEGMENTS_DIR / "live_scte35.mpd"
 OVERLAYS_DIR     = Path(__file__).parent / "overlays"
 
-MORPHEUS_URL     = config.get("MORPHEUS_URL", "http://morpheus")
-MORPHEUS_URL = f"{MORPHEUS_URL}/live.mpd"
 VAST2SGAI_URL         = config.get("VAST2SGAI_URL", "http://localhost:3000")
 REAL_TIME_AD_GEN_URL  = config.get("REAL_TIME_AD_GEN_URL", "http://api:8000")
 SERVER_PORT      = config.get_int("SERVER_PORT", 8000)
@@ -430,25 +428,6 @@ async def handle_index(request: web.Request) -> web.Response:
     )
 
 
-async def handle_live_mpd(request: web.Request) -> web.Response:
-    """Proxy GET /live.mpd → Morpheus → player, replacing URL placeholders for overlay events."""
-    try:
-        async with ClientSession(timeout=ClientTimeout(total=5)) as session:
-            async with session.get(MORPHEUS_URL) as resp:
-                body = await resp.read()
-
-        return web.Response(
-            body=body,
-            content_type="application/dash+xml",
-            headers=CORS_HEADERS,
-        )
-    except Exception as exc:
-        return web.Response(
-            status=502,
-            text=f"Could not reach Morpheus: {exc}",
-            headers=CORS_HEADERS,
-        )
-
 
 async def handle_scte35_mpd(_request: web.Request) -> web.Response:
     """Serve the last SCTE-35-patched MPD written to disk (pre-Morpheus)."""
@@ -758,7 +737,6 @@ def make_app() -> web.Application:
     app.on_cleanup.append(on_cleanup)
 
     app.router.add_get("/",              handle_index)
-    app.router.add_get("/live.mpd",        handle_live_mpd)
     app.router.add_get("/live_scte35.mpd", handle_scte35_mpd)
     app.router.add_get("/segments/{filename}", handle_segment)
     app.router.add_post("/api/start",    handle_start)

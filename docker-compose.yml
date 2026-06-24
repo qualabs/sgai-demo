@@ -43,7 +43,7 @@ services:
       - "8082:80"
 
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.30.5
     ports:
       - "11434:11434"
     volumes:

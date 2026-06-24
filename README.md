@@ -8,19 +8,20 @@ The stack streams a live DASH manifest, injects SCTE-35 ad break markers, conver
 
 ## Architecture
 
+### Alternative MPD flow
 ```mermaid
 sequenceDiagram
     participant A as External services (CDN, Ad Server)
     participant B as Browser
-    participant P as player :8081
-    participant D as dashjs :3001
+    participant P as player :8082
+    participant D as dashjs :3003
     participant M as morpheus :8080
     participant L as live-sim :8000
     participant V as vast-2-sgai :3000
 
     loop Start FFmpeg stream
         L->>L: Listen for ad break injections
-        L->>M: PUT manifest (with SCTE-35)
+        L->>M: PUT manifest (w/ SCTE-35)
     end
     B->>P: GET /
     P-->>B: sample-player.html
@@ -41,6 +42,42 @@ sequenceDiagram
         Note over B: Player switches to ad content
         B->>A: Fetch ad segments (ImportedMPD URIs)
         B->>A: Fire tracking beacons (start, impression, quartiles)
+    end
+```
+
+### Overlays / context-aware ad generation flow
+
+```mermaid
+sequenceDiagram
+    participant R as real-time-ad-gen
+    participant B as Browser
+    participant P as player :8082
+    participant D as dashjs :3003
+    participant M as morpheus :8080
+    participant S as stream-lens :8001
+    participant L as live-sim :8000
+
+    loop Start FFmpeg stream
+        L->>L: Listen for ad break injections
+        L->>S: PUT manifest (w/ SCTE-35)
+        L->>S: PUT segments
+        S->>S: Extract context from DASH stream
+        S->>M: PUT manifest (w/ SCTE-35 & context)
+    end
+    B->>P: GET /
+    P-->>B: sample-player.html
+    B->>D: GET /dist/modern/umd/dash.all.debug.js
+    D-->>B: dash.js bundle
+
+    loop Live event
+        B->>M: GET /live.mpd
+        M-->>B: DASH manifest (w/ OverlayEvent event & context)
+
+        Note over B: Player prefetches overlay asset
+
+        B->>R: GET /image/html?template_id=...&ctx_params=...&usr_params=...
+        R->>B: AI-edited overlay asset
+        Note over B: Player displays the overlay along main content
     end
 ```
 
@@ -118,7 +155,6 @@ Key variables in `.env`:
 | Variable | Description |
 |----------|-------------|
 | `VAST2SGAI_URL` | Internal URL for vast-2-sgai (default: `http://vast-2-sgai:3000`) |
-| `MORPHEUS_URL` | Internal URL for Morpheus (default: `http://morpheus`) |
 | `REAL_TIME_AD_GEN_URL` | Internal URL for the ad generator API (default: `http://api:8000`) |
 
 #### Overlay ad URLs (morpheus)
@@ -191,7 +227,7 @@ The first build takes a few minutes — the `dashjs` image installs all npm depe
 
 ### 4. Open the demo
 
-Navigate to [http://localhost:8081](http://localhost:8081).
+Navigate to [http://localhost:8082](http://localhost:8082).
 
 The manifest URL is pre-filled with `http://localhost:8080/live.mpd`. Use the `live-sim` control panel at [http://localhost:8000](http://localhost:8000) to start the FFmpeg stream and inject SCTE-35 ad break events.
 
@@ -223,11 +259,11 @@ The submodules are pinned to specific commits that are known to work with this d
 
 | Submodule | Commit |
 |-----------|--------|
-| `dash.js` | `4ff27660fadf4f65a0631bb4bbfd475c1ef84857` |
-| `morpheus` | `ff0cb483b8a34d0b5ea601c7f6b4b580c7213bfb` |
-| `vast-2-sgai` | `0964dcfb3aa74ad0a8631316decc76ac3c6e6449` |
-| `real-time-ad-gen` | `be96f5fcc21f61af867ba6dbfb40f1fe40d0d077` |
-| `stream-lens` | `29a49d2f8f4f78d4b13f731f2bb5b2b69914a18c` |
+| `dash.js` | `3ea7d4f9b2047d49e2a92ebe502c8cb649bebf68` |
+| `morpheus` | `54de65d461ee83c3d5a542dc10c37737e7c8dbbd` |
+| `vast-2-sgai` | `d18e495ec558cffef70ab5efca94c9fbcfd357a3` |
+| `real-time-ad-gen` | `e20d11608f0a6f35a0c2d81a4d4d1f0326b27791` |
+| `stream-lens` | `e29ffa673c62b2dcf0c35822e571890d748507dd` |
 
 If you update a submodule and the demo breaks, reset it to the pinned commit:
 
