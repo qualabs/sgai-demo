@@ -1,12 +1,12 @@
 [submodule "vast-2-sgai"]
 	path = vast-2-sgai
-	url = https://github.com/qualabs/vast-2-sgai
+	url = git@github.com:qualabs/vast-2-sgai.git
 [submodule "dash.js"]
 	path = dash.js
-	url = https://github.com/qualabs/dash.js
+	url = git@github.com:qualabs/dash.js.git
 [submodule "morpheus"]
 	path = morpheus
-	url = https://github.com/qualabs/morpheus
+	url = git@github.com:qualabs/morpheus.git
 [submodule "real-time-ad-gen"]
 	path = real-time-ad-gen
 	url = git@github.com:qualabs/real-time-ad-gen.git
