@@ -892,8 +892,9 @@
             if (ctx.processed_at) clipParts.push('analyzed: ' + _fmtIso(ctx.processed_at));
             clipEl.textContent = clipParts.join('  ·  ') || '—';
 
-            if (ctx.context == null) return;
-            bodyEl.innerHTML = _renderKvContext(String(ctx.context));
+            bodyEl.innerHTML = ctx.context == null
+                ? '<span style="color:#475569">—</span>'
+                : _renderKvContext(String(ctx.context));
         }
 
         function startContextPolling() {

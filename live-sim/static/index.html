@@ -377,6 +377,20 @@
 
 <h1>Live-Sim Control</h1>
 
+<!-- Input Source card -->
+<div class="card">
+  <h2>Input Source</h2>
+  <label style="font-size:0.8rem;color:#94a3b8;">
+    Source
+    <select id="input-source" onchange="switchInput(this.value)" style="margin-top:0.3rem;">
+      <option value="">SMPTE Bars (synthetic)</option>
+    </select>
+  </label>
+  <p id="input-hint" style="font-size:0.75rem;color:#f59e0b;margin-top:0.6rem;display:none;">
+    Stream stopped — press <strong>Start</strong> to apply the new source.
+  </p>
+</div>
+
 <!-- Stream card -->
 <div class="card">
   <h2>Stream</h2>
@@ -485,6 +499,45 @@
 <script>
   const BASE = '';
 
+  // ── Input source ──────────────────────────────────────────────────────────
+
+  async function loadMediaFiles() {
+    try {
+      const r = await fetch(`${BASE}/api/media`);
+      const j = await r.json();
+      const sel = document.getElementById('input-source');
+      (j.files || []).forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = `/media/${name}`;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+    } catch (_) {}
+  }
+
+  async function switchInput(value) {
+    const r = await fetch(`${BASE}/api/switch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ LIVE_SIM_VIDEO: value || null }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      document.getElementById('input-hint').style.display = 'block';
+      toast('Input changed — press Start to stream');
+    } else {
+      toast('Failed to switch input', true);
+    }
+  }
+
+  function syncInputSelector(currentVideo) {
+    const sel = document.getElementById('input-source');
+    const target = currentVideo || '';
+    if (sel.value !== target) sel.value = target;
+  }
+
+  // ── Stream controls ───────────────────────────────────────────────────────
+
   async function startFFmpeg() {
     const r = await fetch(`${BASE}/api/start`, { method: 'POST' });
     const j = await r.json();
@@ -584,12 +637,15 @@
       document.getElementById('btn-inject-replace').disabled = !running;
       document.getElementById('btn-inject-overlay').disabled = !running;
 
+      syncInputSelector(j.current_video || null);
+      if (running) document.getElementById('input-hint').style.display = 'none';
+
       renderEvents(j.events || []);
     } catch (_) {}
   }
 
   setInterval(poll, 2000);
-  poll();
+  loadMediaFiles().then(poll);
 
   function highlightXml(text) {
     // Escape HTML entities first

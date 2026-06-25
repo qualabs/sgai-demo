@@ -47,6 +47,7 @@ VAST2SGAI_URL         = config.get("VAST2SGAI_URL", "http://localhost:3000")
 REAL_TIME_AD_GEN_URL  = config.get("REAL_TIME_AD_GEN_URL", "http://ad-gen-api:8000")
 SERVER_PORT      = config.get_int("SERVER_PORT", 8000)
 PATCH_INTERVAL   = config.get_int("PATCH_INTERVAL", 2)
+MORPHEUS_URL     = config.get("MORPHEUS_URL", "http://morpheus")
 
 
 # Shared output/encoding tail — identical for both the synthetic and the
@@ -463,9 +464,11 @@ async def handle_start(request: web.Request) -> web.Response:
 
     SEGMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Remove old MPD to avoid stale data
-    if MPD_PATH.exists():
-        MPD_PATH.unlink()
+    # Remove stale MPD and any leftover segments from a previous run
+    for _f in SEGMENTS_DIR.glob("*.mpd"):
+        _f.unlink(missing_ok=True)
+    for _f in SEGMENTS_DIR.glob("*.m4s"):
+        _f.unlink(missing_ok=True)
 
     used_file = bool(_live_sim_video and os.path.isfile(_live_sim_video))
     logger.info("[ffmpeg] source=%s", _live_sim_video if used_file else "synthetic smptehdbars")
@@ -540,6 +543,7 @@ async def handle_status(request: web.Request) -> web.Response:
             "ffmpeg_running": running,
             "ffmpeg_pid":     ffmpeg_proc.pid if running else None,
             "events":         events_info,
+            "current_video":  _live_sim_video,
         },
         headers=CORS_HEADERS,
     )
@@ -704,6 +708,95 @@ async def handle_config(request: web.Request) -> web.Response:
     )
 
 
+async def handle_switch(request: web.Request) -> web.Response:
+    """Switch input source with a full segment-store flush.
+
+    Sequence:
+      1. Stop FFmpeg (if running).
+      2. Delete local .m4s / .mpd files from SEGMENTS_DIR.
+      3. Delete pushed segments from Morpheus.
+      4. Reset stream-lens buffer via POST /config.
+      5. Update _live_sim_video.
+      6. Reset push-tracking state.
+
+    The caller must POST /api/start to begin streaming the new source.
+    """
+    global _live_sim_video, ffmpeg_proc, ffmpeg_start, _pushed_init, _pushed_segments
+
+    body = await request.json()
+    new_video = str(body["LIVE_SIM_VIDEO"]) if body.get("LIVE_SIM_VIDEO") else None
+
+    # 1. Stop FFmpeg
+    if ffmpeg_proc is not None and ffmpeg_proc.returncode is None:
+        ffmpeg_proc.send_signal(signal.SIGTERM)
+        try:
+            await asyncio.wait_for(ffmpeg_proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            ffmpeg_proc.kill()
+        ffmpeg_proc  = None
+        ffmpeg_start = None
+        logger.info("[switch] FFmpeg stopped")
+
+    # 2. Clear local segment files
+    for _f in SEGMENTS_DIR.glob("*.m4s"):
+        _f.unlink(missing_ok=True)
+    for _f in SEGMENTS_DIR.glob("*.mpd"):
+        _f.unlink(missing_ok=True)
+    logger.info("[switch] local segments cleared")
+
+    # Snapshot pushed state before reset so we know what to delete remotely
+    init_ids      = list(_pushed_init.keys())
+    old_segments  = list(_pushed_segments)
+    _pushed_init  = {}
+    _pushed_segments.clear()
+    _live_sim_video = new_video
+
+    async with ClientSession(timeout=ClientTimeout(total=10)) as session:
+        # 3. Delete old segments from Morpheus
+        morpheus_files = (
+            [f"init-stream{i}.m4s" for i in init_ids]
+            + old_segments
+            + ["live.mpd"]
+        )
+        for name in morpheus_files:
+            try:
+                async with session.delete(f"{MORPHEUS_URL}/{name}") as _:
+                    pass  # 204 = deleted, 404 = already gone — both fine
+            except Exception:
+                pass
+        logger.info("[switch] morpheus cleanup attempted for %d files", len(morpheus_files))
+
+        # 4. Reset stream-lens buffer
+        if OUTPUT_URL:
+            try:
+                async with session.post(
+                    f"{OUTPUT_URL}/config",
+                    json={"BUFFER_SIZE": config.get_int("BUFFER_SIZE", 7)},
+                    headers={"Content-Type": "application/json"},
+                ) as resp:
+                    logger.info("[switch] stream-lens reset: HTTP %s", resp.status)
+            except Exception as exc:
+                logger.warning("[switch] stream-lens reset failed: %s", exc)
+
+    logger.info("[switch] done — new source: %s", new_video or "synthetic SMPTE bars")
+    return web.json_response(
+        {"ok": True, "config": {"LIVE_SIM_VIDEO": _live_sim_video}},
+        headers=CORS_HEADERS,
+    )
+
+
+async def handle_media_list(_request: web.Request) -> web.Response:
+    """List MP4 files available in /media (the mounted host media directory)."""
+    media_dir = Path("/media")
+    files: list[str] = []
+    if media_dir.is_dir():
+        files = sorted(
+            f.name for f in media_dir.iterdir()
+            if f.is_file() and f.suffix.lower() == ".mp4"
+        )
+    return web.json_response({"files": files}, headers=CORS_HEADERS)
+
+
 async def handle_hello(_request: web.Request) -> web.Response:
     return web.Response(text="goodbye", headers=CORS_HEADERS)
 
@@ -747,6 +840,8 @@ def make_app() -> web.Application:
     app.router.add_post("/api/inject",         handle_inject)
     app.router.add_post("/api/inject-overlay", handle_inject_overlay)
     app.router.add_get("/api/list-mpd",        handle_list_mpd)
+    app.router.add_get("/api/media",           handle_media_list)
+    app.router.add_post("/api/switch",         handle_switch)
     app.router.add_get("/hello",             handle_hello)
     app.router.add_route("OPTIONS", "/{path_info:.*}", handle_options)
 
