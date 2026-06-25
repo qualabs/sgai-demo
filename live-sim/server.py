@@ -44,7 +44,7 @@ PATCHED_MPD_PATH = SEGMENTS_DIR / "live_scte35.mpd"
 OVERLAYS_DIR     = Path(__file__).parent / "overlays"
 
 VAST2SGAI_URL         = config.get("VAST2SGAI_URL", "http://localhost:3000")
-REAL_TIME_AD_GEN_URL  = config.get("REAL_TIME_AD_GEN_URL", "http://api:8000")
+REAL_TIME_AD_GEN_URL  = config.get("REAL_TIME_AD_GEN_URL", "http://ad-gen-api:8000")
 SERVER_PORT      = config.get_int("SERVER_PORT", 8000)
 PATCH_INTERVAL   = config.get_int("PATCH_INTERVAL", 2)
 

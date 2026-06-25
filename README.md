@@ -13,8 +13,8 @@ The stack streams a live DASH manifest, injects SCTE-35 ad break markers, conver
 sequenceDiagram
     participant A as External services (CDN, Ad Server)
     participant B as Browser
-    participant P as player :8082
-    participant D as dashjs :3003
+    participant P as sgai-player :8082
+    participant D as dash-player :3003
     participant M as morpheus :8080
     participant L as live-sim :8000
     participant V as vast-2-sgai :3000
@@ -51,8 +51,8 @@ sequenceDiagram
 sequenceDiagram
     participant R as real-time-ad-gen
     participant B as Browser
-    participant P as player :8082
-    participant D as dashjs :3003
+    participant P as sgai-player :8082
+    participant D as dash-player :3003
     participant M as morpheus :8080
     participant S as stream-lens :8001
     participant L as live-sim :8000
@@ -87,15 +87,15 @@ sequenceDiagram
 
 | Port | Service | Description |
 |------|---------|-------------|
-| 8082 | `player` | Demo page — serves `sample-player.html` |
-| 3003 | `dashjs` | dash.js webpack dev server — serves compiled player + assets |
+| 8082 | `sgai-player` | Demo page — serves `sample-player.html` |
+| 3003 | `dash-player` | dash.js webpack dev server — serves compiled player + assets |
 | 8080 | `morpheus` | MPEG-DASH manifest server with SCTE-35 → SGAI conversion |
 | 8000 | `live-sim` | Live stream simulator — FFmpeg + SCTE-35 injector + ListMPD proxy |
 | 8001 | `stream-lens` | AI context analyzer — buffers DASH segments, runs video+audio analysis, fuses into KV context string |
 | 3000 | `vast-2-sgai` | VAST-to-SGAI adapter — converts VAST XML into DASH ListMPDs |
-| 8888 | `api` (real-time-ad-gen) | Real-time AI ad generator — generates overlay images via Gemini |
-| 3002 | `ui` (real-time-ad-gen) | Template manager UI for the ad generator |
-| 8081 | `mongo-express` (real-time-ad-gen) | MongoDB admin UI |
+| 8888 | `ad-gen-api` | Real-time AI ad generator — generates overlay images via Gemini |
+| 3002 | `ad-gen-ui` | Template manager UI for the ad generator |
+| 8081 | `ad-gen-db-admin` | MongoDB admin UI for the ad generator |
 
 ### `morpheus` — MPEG-DASH server ([qualabs/morpheus](https://github.com/qualabs/morpheus), branch: `feat/scte-to-overlay`)
 Custom Nginx module that converts SCTE-35 markers in the incoming MPD into `<ReplacePresentation>` and `<OverlayEvent>` SGAI events and serves the patched manifest to the player.
@@ -112,11 +112,11 @@ Node.js service that parses a VAST XML file and generates a DASH ListMPD with ad
 ### `real-time-ad-gen` — AI overlay ad generator ([qualabs/real-time-ad-gen](https://github.com/qualabs/real-time-ad-gen))
 FastAPI service that generates personalized ad images using Google Gemini. Accepts a template ID and query parameters, returns a PNG cached by SHA-256. Includes a MongoDB backend (GridFS) and a template manager UI.
 
-### `dashjs` — instrumented player ([qualabs/dash.js](https://github.com/qualabs/dash.js), branch: `sgai/alternative-overlays`)
+### `dash-player` — instrumented player ([qualabs/dash.js](https://github.com/qualabs/dash.js), branch: `sgai/alternative-overlays`)
 Fork of dash.js with CMCD v2, SGAI alternative-content and overlays support. Served via webpack dev server.
 
-### `player` — demo page
-Minimal nginx container serving `sample-player.html` — loads dash.js from the `dashjs` service and plays back the manifest from `morpheus`.
+### `sgai-player` — demo page
+Minimal nginx container serving `sample-player.html` — loads dash.js from the `dash-player` service and plays back the manifest from `morpheus`.
 
 ---
 
@@ -129,35 +129,76 @@ Minimal nginx container serving `sample-player.html` — loads dash.js from the 
 
 ## Setup
 
-### 1. Clone with submodules
+### Alternative-presentation flow (VAST ads)
 
-```bash
-git clone --recurse-submodules <this-repo-url>
-cd sgai-demo
-```
+Minimal setup — no API key or model download required.
 
-If you already cloned without `--recurse-submodules`:
+- [ ] `git clone --recurse-submodules <this-repo-url> && cd sgai-demo`
+- [ ] `cp .env.example .env`
+- [ ] In `.env`, set `OUTPUT_URL=http://morpheus` (routes live-sim directly to morpheus, bypassing stream-lens)
+- [ ] `docker compose up --build`
+- [ ] Open **http://localhost:8082**
 
-```bash
-git submodule update --init --recursive
-```
+Use the `live-sim` control panel at [http://localhost:8000](http://localhost:8000) to start the stream and inject SCTE-35 ad break events.
 
-### 2. Configure environment variables
+If you already cloned without `--recurse-submodules`: `git submodule update --init --recursive`
 
-Copy the root-level example and fill in required values:
+### Overlay / context-aware ad flow
 
-```bash
-cp .env.example .env
-```
+Builds on top of the VAST flow — can be enabled on a running stack or from scratch.
 
-Key variables in `.env`:
+- [ ] Fill in `GOOGLE_API_KEY` in `.env`
+- [ ] *(Optional)* Set `OLLAMA_MODELS_DIR=/path/to/.ollama` in `.env` to reuse local Ollama models
+- [ ] Add your template images to `real-time-ad-gen/sample_templates/` (`banner.png`, `skyscraper.png`, `lshape-left.png`, `lshape-right.png`)
+- [ ] Run `./setup.sh` — pre-pulls the Ollama fusion model and registers the sample templates, printing each UUID
+      *(or run independently: `./stream-lens/pull-models.sh` and `./real-time-ad-gen/setup-templates.sh`)*
+- [ ] In `.env`, set one or more of `MORPHEUS_BANNER_QUERY` / `MORPHEUS_SKYSCRAPER_QUERY` / `MORPHEUS_LSHAPE_RIGHT_QUERY` / `MORPHEUS_LSHAPE_LEFT_QUERY` to `template_id=<uuid>` (the player appends the remaining query params)
+- [ ] `docker compose up --build` (or `docker compose restart` if stack is already running)
+- [ ] Open **http://localhost:8082** — overlay ads with AI-generated context now appear
 
-| Variable | Description |
-|----------|-------------|
-| `VAST2SGAI_URL` | Internal URL for vast-2-sgai (default: `http://vast-2-sgai:3000`) |
-| `REAL_TIME_AD_GEN_URL` | Internal URL for the ad generator API (default: `http://api:8000`) |
+---
 
-#### Overlay ad URLs (morpheus)
+## Running the overlay demo
+
+Once the stack is up and configured for the overlay flow, follow these steps to watch an AI-generated context-aware ad appear over the live stream.
+
+### 1. Start the stream
+
+Open the live-sim control panel at **http://localhost:8000**.
+
+- **SMPTE bars (default):** click **Start stream** — no extra config needed.
+- **Custom video:** set `LIVE_SIM_VIDEO=/media/<filename>` in `.env`, drop the file in `live-sim/media/`, restart `live-sim`, then click **Start stream**.
+
+The player at **http://localhost:8082** should start playing the live stream within a few seconds.
+
+### 2. Wait for a context analysis cycle
+
+stream-lens continuously analyzes the incoming video and audio. The current context string (e.g. `ctx_activity=surfing&ctx_mood=energetic`) is overlaid on the player screen once the first cycle completes — this usually takes 15–30 s after stream start.
+
+The ad will be generated using this context, so wait until it appears before injecting the break.
+
+### 3. Inject the ad break
+
+Back in the live-sim control panel, click **Inject ad break**.
+
+Morpheus notifies the player 35 s before the break starts (`earliestResolutionTime=35000`). The player uses this window to pre-fetch the overlay — it immediately calls `real-time-ad-gen` with the template ID and context parameters. This lead time is necessary because Gemini image generation typically takes 10–20 s, and the overlay must be ready before the break begins.
+
+When the break arrives, the overlay ad appears on top of the main content.
+
+### 4. Inspect the generated image
+
+Open the ad generator UI at **http://localhost:3002** and go to the **History** tab. You can see:
+
+- The generated image
+- The full prompt that was sent to Gemini (template type description + template description + context + user params)
+- Generation latency
+- Cache status (HIT / MISS) — re-injecting the same break with the same context will return the cached image instantly
+
+---
+
+## Configuration reference
+
+### Overlay ad URLs (morpheus)
 
 Morpheus builds each overlay `uri` in the served MPD as:
 
@@ -170,20 +211,20 @@ These are resolved by the **player (browser)**, not by morpheus, so `AD_GEN_BASE
 | Variable | Description |
 |----------|-------------|
 | `AD_GEN_BASE_URL` | host:port of the ad-gen API as the browser must reach it (default: `http://localhost:8888`) |
-| `MORPHEUS_BANNER_QUERY` | Full query string (template_id + targeting params) for the banner overlay |
-| `MORPHEUS_SKYSCRAPER_QUERY` | Full query string for the skyscraper overlay |
-| `MORPHEUS_LSHAPE_RIGHT_QUERY` | Full query string for the L-shape (right) overlay |
-| `MORPHEUS_LSHAPE_LEFT_QUERY` | Full query string for the L-shape (left) overlay |
+| `MORPHEUS_BANNER_QUERY` | `template_id=<uuid>` for the banner overlay |
+| `MORPHEUS_SKYSCRAPER_QUERY` | `template_id=<uuid>` for the skyscraper overlay |
+| `MORPHEUS_LSHAPE_RIGHT_QUERY` | `template_id=<uuid>` for the L-shape (right) overlay |
+| `MORPHEUS_LSHAPE_LEFT_QUERY` | `template_id=<uuid>` for the L-shape (left) overlay |
 
-All five are **optional**. If unset or empty, morpheus falls back to compiled defaults (`localhost:8888` + the default templates), so the demo still runs with no config.
+The player appends context and user parameters at request time — only the template ID needs to be set here.
 
-To change values, edit `.env` and restart the service — no rebuild is needed for value changes (only the initial code change required a rebuild):
+All five are **optional**. If unset or empty, morpheus falls back to compiled defaults (`localhost:8888` + the default templates), so the demo still runs with no config. To apply changes, restart morpheus:
 
 ```bash
 docker compose up -d morpheus
 ```
 
-#### Background video (live-sim)
+### Background video (live-sim)
 
 By default `live-sim` streams a synthetic `smptehdbars` test pattern with a LOCAL/UTC timecode overlay drawn on every frame, plus a synthetic beep audio track — so the demo runs with no config and no media files present.
 
@@ -198,38 +239,11 @@ Behavior:
 - **Set and the file exists:** FFmpeg loops the file infinitely, uses the **file's own audio**, and **omits** the timecode overlay.
 - **Unset/empty or the file is missing:** falls back to the synthetic SMPTE-bars source with the timecode overlay (the default).
 
-Files dropped in `live-sim/media/` are never committed (a `.gitignore` ignores everything but itself). To change the video, edit `.env` and restart the service:
+Files dropped in `live-sim/media/` are never committed (a `.gitignore` ignores everything but itself). To change the video, edit `.env` and restart `live-sim`:
 
 ```bash
 docker compose up -d live-sim
 ```
-
-`vast-2-sgai` uses its own `.env` inside the submodule:
-
-```bash
-cp vast-2-sgai/.env.example vast-2-sgai/.env
-```
-
-`real-time-ad-gen` also requires its own `.env` — copy the example and set your Gemini API key:
-
-```bash
-cp real-time-ad-gen/.env.example real-time-ad-gen/.env
-# Edit real-time-ad-gen/.env: set GOOGLE_API_KEY
-```
-
-### 3. Build and start all services
-
-```bash
-docker compose up --build
-```
-
-The first build takes a few minutes — the `dashjs` image installs all npm dependencies.
-
-### 4. Open the demo
-
-Navigate to [http://localhost:8082](http://localhost:8082).
-
-The manifest URL is pre-filled with `http://localhost:8080/live.mpd`. Use the `live-sim` control panel at [http://localhost:8000](http://localhost:8000) to start the FFmpeg stream and inject SCTE-35 ad break events.
 
 ---
 
@@ -260,10 +274,10 @@ The submodules are pinned to specific commits that are known to work with this d
 | Submodule | Commit |
 |-----------|--------|
 | `dash.js` | `3ea7d4f9b2047d49e2a92ebe502c8cb649bebf68` |
-| `morpheus` | `54de65d461ee83c3d5a542dc10c37737e7c8dbbd` |
+| `morpheus` | `3b71cca754ea56560629c5a340e22cf1633a8443` |
 | `vast-2-sgai` | `d18e495ec558cffef70ab5efca94c9fbcfd357a3` |
-| `real-time-ad-gen` | `e20d11608f0a6f35a0c2d81a4d4d1f0326b27791` |
-| `stream-lens` | `e29ffa673c62b2dcf0c35822e571890d748507dd` |
+| `real-time-ad-gen` | `8f4d0afbdce794d18aad33236496ec53cfa4e066` |
+| `stream-lens` | `0231d2e78cdc7d4dd914c1962a81f94b53e81e95` |
 
 If you update a submodule and the demo breaks, reset it to the pinned commit:
 

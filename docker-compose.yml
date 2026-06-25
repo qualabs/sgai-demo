@@ -2,7 +2,7 @@ include:
   - path: ./real-time-ad-gen/docker-compose.yml
     project_directory: ./real-time-ad-gen
     env_file:
-      - ./real-time-ad-gen/.env
+      - .env
 
 volumes:
   morpheus_shm:
@@ -28,14 +28,14 @@ services:
     environment:
       NODE_ENV: development
 
-  dashjs:
+  dash-player:
     build:
       context: ./dash.js
       dockerfile: ../Dockerfile.dashjs
     ports:
       - "3003:3001"
 
-  player:
+  sgai-player:
     build:
       context: ./player
       dockerfile: Dockerfile
@@ -47,7 +47,7 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      - ollama_models:/root/.ollama
+      - ${OLLAMA_MODELS_DIR:-ollama_models}:/root/.ollama
 
   stream-lens:
     build: ./stream-lens
@@ -68,4 +68,8 @@ services:
       - morpheus
       - vast-2-sgai
       - stream-lens
-      - api
+      - ad-gen-api
+
+  ad-gen-api:
+    env_file:
+      - .env
