@@ -1,15 +1,20 @@
 [submodule "vast-2-sgai"]
 	path = vast-2-sgai
 	url = git@github.com:qualabs/vast-2-sgai.git
+	branch = main
 [submodule "dash.js"]
 	path = dash.js
 	url = git@github.com:qualabs/dash.js.git
+	branch = sgai/alternative-overlays
 [submodule "morpheus"]
 	path = morpheus
 	url = git@github.com:qualabs/morpheus.git
+	branch = feat/scte-to-overlay
 [submodule "real-time-ad-gen"]
 	path = real-time-ad-gen
 	url = git@github.com:qualabs/real-time-ad-gen.git
+	branch = main
 [submodule "stream-lens"]
 	path = stream-lens
 	url = git@github.com:qualabs/stream-lens.git
+	branch = main
