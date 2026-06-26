@@ -188,7 +188,6 @@ ffmpeg_log:     collections.deque        = collections.deque(maxlen=200)
 
 OUTPUT_URL       = config.get("OUTPUT_URL", "http://morpheus")
 MPD_PUSH_URL     = f"{OUTPUT_URL}/live.mpd"
-SEGMENT_PUSH_URL = f"{OUTPUT_URL}/segment"
 
 _pushed_init:     dict[int, bool] = {}
 _pushed_segments: set[str]        = set()
@@ -337,22 +336,21 @@ async def patcher_loop():
 
 async def _push_segment(
     session: ClientSession,
-    url: str,
     data: bytes,
     seg_type: str,
     stream_type: str,
     seg_num: int | None,
-    seg_name: str | None = None,
+    seg_name: str,
 ) -> int:
+    url = f"{OUTPUT_URL}/{seg_name}"
     headers = {
         "Content-Type": "application/octet-stream",
         "X-Segment-Type": seg_type,
         "X-Stream-Type": stream_type,
+        "X-Segment-Name": seg_name,
     }
     if seg_num is not None:
         headers["X-Segment-Number"] = str(seg_num)
-    if seg_name is not None:
-        headers["X-Segment-Name"] = seg_name
     try:
         async with session.put(url, data=data, headers=headers) as resp:
             if resp.status not in (200, 201, 204):
@@ -364,10 +362,8 @@ async def _push_segment(
 
 
 async def segment_pusher_loop():
-    """Background task: forward new DASH segments to stream-lens."""
+    """Background task: forward new DASH segments to OUTPUT_URL/{seg_name}."""
     global _pushed_init, _pushed_segments
-
-    segment_url = SEGMENT_PUSH_URL
 
     async with ClientSession(timeout=ClientTimeout(total=10)) as session:
         while True:
@@ -377,12 +373,10 @@ async def segment_pusher_loop():
                     for stream_id in range(_num_video_renditions + 1):
                         if not _pushed_init.get(stream_id, False):
                             stream_type = "video" if stream_id < _num_video_renditions else "audio"
-                            p = SEGMENTS_DIR / f"init-stream{stream_id}.m4s"
+                            seg_name = f"init-stream{stream_id}.m4s"
+                            p = SEGMENTS_DIR / seg_name
                             if p.exists():
-                                await _push_segment(
-                                    session, segment_url, p.read_bytes(),
-                                    "init", stream_type, None, f"init-stream{stream_id}.m4s"
-                                )
+                                await _push_segment(session, p.read_bytes(), "init", stream_type, None, seg_name)
                                 _pushed_init[stream_id] = True
 
                     # Push new media segments
@@ -392,7 +386,7 @@ async def segment_pusher_loop():
                             if m:
                                 stream_type = "video" if int(m.group(1)) < _num_video_renditions else "audio"
                                 seg_num = int(m.group(2))
-                                status = await _push_segment(session, segment_url, seg_file.read_bytes(), "media", stream_type, seg_num, seg_file.name)
+                                status = await _push_segment(session, seg_file.read_bytes(), "media", stream_type, seg_num, seg_file.name)
                                 if status == 409:
                                     # stream-lens restarted and lost init state — re-push next iteration
                                     logger.info("[pusher] stream-lens lost state (409), resetting push flags")
@@ -813,7 +807,7 @@ async def on_startup(app: web.Application):
         app["pusher"] = asyncio.create_task(segment_pusher_loop())
     logger.info("[server] listening on http://localhost:%s", SERVER_PORT)
     logger.info("[server] player manifest: http://localhost:%s/live.mpd", SERVER_PORT)
-    logger.info("[server] output: %s (mpd → %s, segments → %s)", OUTPUT_URL, MPD_PUSH_URL, SEGMENT_PUSH_URL)
+    logger.info("[server] output: %s (mpd → %s, segments → %s/{seg_name})", OUTPUT_URL, MPD_PUSH_URL, OUTPUT_URL)
 
 
 async def on_cleanup(app: web.Application):

@@ -277,7 +277,7 @@ The submodules are pinned to specific commits that are known to work with this d
 | `morpheus` | `3b71cca754ea56560629c5a340e22cf1633a8443` |
 | `vast-2-sgai` | `d18e495ec558cffef70ab5efca94c9fbcfd357a3` |
 | `real-time-ad-gen` | `b4b787ddb91b7fbc24f44916b9213ea90a9d685c` |
-| `stream-lens` | `29fe586c61a59e5ff1b000e7a1950fa5a7926870` |
+| `stream-lens` | `53455e2b49faf4b51ddbca0f2e77a2f01640d2a6` |
 
 If you update a submodule and the demo breaks, reset it to the pinned commit:
 
